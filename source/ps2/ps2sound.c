@@ -9,12 +9,8 @@ volatile unsigned int AudioFastForwarded;
 
 #define DAMPEN_SAMPLE_COUNT (AUDIO_OUTPUT_BUFFER_SIZE / 32)
 #define AUDIO_THREAD_STACK_SIZE (8 * 1024)
-/* Lower number = higher priority on the EE. Main is demoted below this. */
-#define AUDIO_THREAD_PRIORITY 0x30
-#define EMU_THREAD_PRIORITY   0x40
-/* One GBA frame at 44100 Hz: 44100 / 59.7275 ≈ 738.35. Hardware wait_audio
- * uses the integer part; HOST uses a Bresenham remainder so rate does not
- * walk. The ring is still 1476 frames so a 739-sample frame fits. */
+/* One GBA frame at 44100 Hz: 44100 / 59.7275 ≈ 738.35. The ring is
+ * still 1476 frames so a 739-sample frame fits. */
 #define AUDIO_DAC_FRAMES      738
 #define AUDIO_DAC_BYTES       (AUDIO_DAC_FRAMES * 2 * (int)sizeof(s16))
 #define AUDIO_CHUNK_BYTES     (AUDIO_OUTPUT_BUFFER_SIZE * 2 * (int)sizeof(s16))
@@ -154,22 +150,17 @@ static void audio_thread(void *arg)
 			continue;
 		}
 
+		/* No wait_audio: that RPC starved boot when this thread was
+		 * higher priority than main. No stale replay: that is the
+		 * held note. Sleep on underrun; main wakes us next frame. */
+		if (!feed_buffer(ps2_sound_buffer, AUDIO_DAC_BYTES))
 		{
-			char *out = ps2_sound_buffer;
-			if (!feed_buffer(ps2_sound_buffer, AUDIO_DAC_BYTES))
-			{
-				/* Silence, not the last chunk (held note) and not Sleep
-				 * (that stops the stream until the next emu wakeup). */
-				out = (char *)ps2_silence;
-			}
-#ifndef HOST
-			/* wait_audio is a sync IOP RPC. On PCSX2 HOST it can stall the
-			 * whole EE for seconds; on hardware it is the DAC clock. */
-			audsrv_wait_audio(AUDIO_DAC_BYTES);
-#endif
-			if (!audio_paused && audio_running)
-				audsrv_play_audio(out, AUDIO_DAC_BYTES);
+			SleepThread();
+			continue;
 		}
+
+		if (!audio_paused && audio_running)
+			audsrv_play_audio((char *)ps2_sound_buffer, AUDIO_DAC_BYTES);
 	}
 
 	SleepThread();
@@ -210,41 +201,17 @@ void init_audio()
 	audio_paused = 0;
 	audio_pause_count = 0;
 
-#ifdef HOST
-	/* No worker on PCSX2. A high-priority Count spin starved the menu
-	 * down to ~2 fps. Play from ReGBA_AudioUpdate on the EE main thread. */
+	/* No worker. A low-priority one starved and audsrv looped the last
+	 * chunk (same note for seconds). A high-priority wait_audio worker
+	 * hung boot. Submit one display field per vblank on this thread. */
 	audio_thread_id = -1;
+	audio_running = 0;
 	ps2_audio_resync();
+#ifdef HOST
 	printf("HOST audio: one display field per enqueue (no worker)\n");
-	return;
+#else
+	printf("Hardware audio: field-clocked main-thread play (no worker)\n");
 #endif
-
-	/* Let the audio worker preempt the emu thread only while it is awake. */
-	ChangeThreadPriority(GetThreadId(), EMU_THREAD_PRIORITY);
-
-	{
-		ee_thread_t thread;
-		memset(&thread, 0, sizeof(thread));
-		thread.func = audio_thread;
-		thread.stack = audio_thread_stack;
-		thread.stack_size = sizeof(audio_thread_stack);
-		thread.gp_reg = &_gp;
-		thread.initial_priority = AUDIO_THREAD_PRIORITY;
-		thread.option = 0;
-		audio_thread_id = CreateThread(&thread);
-		if (audio_thread_id < 0)
-		{
-			printf("Failed to create audio thread (%d); audio stays on the EE main thread\n",
-				(int)audio_thread_id);
-			audio_thread_id = -1;
-			audio_running = 0;
-		}
-		else
-		{
-			StartThread(audio_thread_id, NULL);
-			printf("Audio thread started (id %d)\n", (int)audio_thread_id);
-		}
-	}
 }
 
 #ifdef HOST
@@ -340,7 +307,6 @@ signed int ReGBA_AudioUpdate()
 #ifdef HOST
 	host_audio_pump();
 #else
-	/* Fallback if the worker thread could not be created. */
 	if (feed_buffer(ps2_sound_buffer, AUDIO_DAC_BYTES))
 		audsrv_play_audio((char*)ps2_sound_buffer, AUDIO_DAC_BYTES);
 #endif

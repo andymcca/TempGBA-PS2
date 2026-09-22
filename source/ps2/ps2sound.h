@@ -7,6 +7,10 @@ void resume_audio();
 void ps2_audio_resync();
 void ps2_audio_begin_frame();
 
+/* Lower than typical EE main (0x40) so play_audio cannot starve execute.
+ * Higher number = lower priority. */
+#define AUDIO_THREAD_PRIORITY 0x50
+
 // Modified by the audio thread to match VideoFastForwarded after it finds
 // that the video thread has skipped a frame. The audio thread must deal
 // with the condition as soon as possible.

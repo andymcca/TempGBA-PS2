@@ -184,24 +184,38 @@ void gsReload()
 			gsGlobal->Mode = GS_MODE_PAL;
 			gsGlobal->Interlace = GS_INTERLACED;
 			gsGlobal->Field = GS_FIELD;
-			/* 704x576 was an overscan hack; PCSX2 and many TVs crop the
-			 * right ~10% because the display window is 640 wide. */
+#ifdef HOST
+			/* PCSX2 crops a 704-wide window (~10% off the right). */
 			gsGlobal->Width = 640;
 			gsGlobal->Height = 512;
+#else
+			gsGlobal->Width = 704;
+			gsGlobal->Height = 576;
+#endif
 			break;
 		case ntsc:
 			gsGlobal->Mode = GS_MODE_NTSC;
 			gsGlobal->Interlace = GS_INTERLACED;
 			gsGlobal->Field = GS_FIELD;
+#ifdef HOST
 			gsGlobal->Width = 640;
 			gsGlobal->Height = 448;
+#else
+			gsGlobal->Width = 704;
+			gsGlobal->Height = 480;
+#endif
 			break;
 		case dtv_480p:
 			gsGlobal->Mode = GS_MODE_DTV_480P;
 			gsGlobal->Interlace = GS_NONINTERLACED;
 			gsGlobal->Field = GS_FRAME;
+#ifdef HOST
 			gsGlobal->Width = 640;
 			gsGlobal->Height = 480;
+#else
+			gsGlobal->Width = 704;
+			gsGlobal->Height = 480;
+#endif
 			break;
 		case dtv_720p:
 			gsGlobal->Mode = GS_MODE_DTV_720P;
@@ -383,7 +397,6 @@ static int vblank_interrupt_handler(void)
 	return 0;
 }
 
-#define AUDIO_THREAD_PRIO 0x30
 /* 59.7275 Hz as 597275/10000. Reduced with field rates by /25. */
 #define PACE_GBA_DEN 23891u
 
@@ -456,7 +469,7 @@ static void pace_emulation(void)
 			if (vblank_ticks == last)
 			{
 				ReGBA_AudioUpdate();
-				RotateThreadReadyQueue(AUDIO_THREAD_PRIO);
+				RotateThreadReadyQueue(AUDIO_THREAD_PRIORITY);
 			}
 			last = vblank_ticks;
 			__asm__ volatile("mfc0 %0, $9" : "=r"(nowc));
