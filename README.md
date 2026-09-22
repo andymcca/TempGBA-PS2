@@ -2,6 +2,30 @@
 
 PlayStation 2 port of TempGBA / ReGBA, forked from [belek666/TempGBA](https://github.com/belek666/TempGBA).
 
+There were a few problems with this emulator as of the last commit in the belek666 repo, so I decided to fork it to fix things up given the recent work I've done on TempGBA4PSP-Mod.  I'm not sure whether I'll port all my changes from that variant, but for the time being here's the main things which should be fixed up -
+
+- Pacing issues improved - previously it felt like the emulator was running too fast.  It should be better now, especially on PAL TVs like mine.
+- Audio issues improved - I tried 9-10 different configs/implementations of audio and picked the one that sounded the best.  Still gets choppy when frames are dropped but it's much better than it was.
+- Hard Drive Launchable - you can now copy it to an installed hard drive and launch it from there (previously you'd get an error message if you tried)
+- Fixed 2nd game crash - after loading your first game, every game you loaded after that wouldn't work until you went back to the menu and selected 'reset game'.  Now fixed. 
+- 'Applying Compatibility Fixes' - this was loading a byte at a time and took forever!  Now loads in one go and much faster.  Same with Cheats/Settings.
+- Exit - actually takes you back to the PS2 menu now rather than a black abyss
+- PCSX2-compatible optional build - you can now build a version that will work in PCSX2!  You need to apply certain settings in PCSX2 so it enables the 'host:' file system.  But very useful for troubleshooting or trying new fixes.  Bear in mind PCSX2 runs a bit faster than an actual console.
+
+First release is pretty much the above.  All changes are AI-assisted for full disclosure.  
+
+Additional info
+---------------
+
+- You put everything in the same folder in this version (no separate folders like TempGBA4PSP).  So ROMs, Saves, BIOS etc, all in the same folder as the ELF.
+- It does have the Normatt BIOS built-in, so you don't need a genuine gba_bios.bin file to play but it is recommended.
+- I haven't tried out Save States, not sure if they work or how to use them.
+- I haven't touched Frame-skipping etc - it seems to work ok but probably room to be improved
+- If you want to play Pokemon ROM Hacks such as Pokemon Unbound, use my Ipatix ROM Patcher (https://github.com/andymcca/pokehns-expansion/releases/tag/Patcher0.1) to patch the audio engine and HBLANK IRQ bug.  Otherwise performance won't be great.
+
+Building
+--------
+
 Hardware and PCSX2 stay on **one branch**. `HOST` is a compile flag, not a second tree.
 
 | Target | Command (from `source/ps2`) | Output |
