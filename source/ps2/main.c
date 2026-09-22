@@ -452,6 +452,7 @@ u32 update_gba()
 					update_backup();
 
 					update_gbc_sound(cpu_ticks_);
+					ps2_audio_begin_frame();
 					ReGBA_AudioUpdate();
 
 

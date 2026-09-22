@@ -12,9 +12,14 @@ volatile unsigned int AudioFastForwarded;
 /* Lower number = higher priority on the EE. Main is demoted below this. */
 #define AUDIO_THREAD_PRIORITY 0x30
 #define EMU_THREAD_PRIORITY   0x40
-/* Stereo S16: 1476 frames @ 44100 = 33 ms. The earlier * 2 was only
- * 16.7 ms and could not queue a second chunk ahead of the DAC. */
+/* One GBA frame at 44100 Hz: 44100 / 59.7275 ≈ 738.35. Hardware wait_audio
+ * uses the integer part; HOST uses a Bresenham remainder so rate does not
+ * walk. The ring is still 1476 frames so a 739-sample frame fits. */
+#define AUDIO_DAC_FRAMES      738
+#define AUDIO_DAC_BYTES       (AUDIO_DAC_FRAMES * 2 * (int)sizeof(s16))
 #define AUDIO_CHUNK_BYTES     (AUDIO_OUTPUT_BUFFER_SIZE * 2 * (int)sizeof(s16))
+#define GBA_RATE_NUM          597275u
+#define GBA_RATE_DEN          10000u
 
 #ifdef SOUND_TO_FILE
 FILE* WaveFile;
@@ -153,7 +158,7 @@ static void audio_thread(void *arg)
 
 		{
 			char *out = ps2_sound_buffer;
-			if (!feed_buffer(ps2_sound_buffer, AUDIO_CHUNK_BYTES))
+			if (!feed_buffer(ps2_sound_buffer, AUDIO_DAC_BYTES))
 			{
 				/* Silence, not the last chunk (held note) and not Sleep
 				 * (that stops the stream until the next emu wakeup). */
@@ -162,10 +167,10 @@ static void audio_thread(void *arg)
 #ifndef HOST
 			/* wait_audio is a sync IOP RPC. On PCSX2 HOST it can stall the
 			 * whole EE for seconds; on hardware it is the DAC clock. */
-			audsrv_wait_audio(AUDIO_CHUNK_BYTES);
+			audsrv_wait_audio(AUDIO_DAC_BYTES);
 #endif
 			if (!audio_paused && audio_running)
-				audsrv_play_audio(out, AUDIO_CHUNK_BYTES);
+				audsrv_play_audio(out, AUDIO_DAC_BYTES);
 		}
 	}
 
@@ -212,7 +217,7 @@ void init_audio()
 	 * down to ~2 fps. Play from ReGBA_AudioUpdate on the EE main thread. */
 	audio_thread_id = -1;
 	ps2_audio_resync();
-	printf("HOST audio: main thread, vblank-clocked (no worker)\n");
+	printf("HOST audio: one GBA frame per emulated frame\n");
 	return;
 #endif
 
@@ -245,68 +250,110 @@ void init_audio()
 }
 
 #ifdef HOST
-/* This 2018 audsrv has wait_audio but no available/queued. Without a
- * worker, play_audio from every ReGBA_AudioUpdate (frame + pace spin)
- * submitted ~2x realtime and overflowed the IOP ring. Clock submissions
- * to the display field rate instead. */
+/* 2018 audsrv has no available/queued. Submit exactly one GBA frame of
+ * samples per emulated frame (same 59.7275 clock as video). A variable
+ * "catch up to the display" dump made pitch walk; leading silence before
+ * the first real buffer made the stream start late vs graphics. */
 static unsigned int host_audio_v0;
 static u32 host_audio_played;
-static unsigned int host_audio_last_field;
-static int host_audio_ready;
+static u32 host_gba_frac;
+static int host_pending_frames;
+static int host_stream_started;
 
 void ps2_audio_resync(void)
 {
-	host_audio_ready = 0;
+	host_audio_played = 0;
+	host_gba_frac = 0;
+	host_pending_frames = 0;
+	host_stream_started = 0;
+}
+
+void ps2_audio_begin_frame(void)
+{
+	if (host_pending_frames < 8)
+		host_pending_frames++;
+}
+
+static u32 host_samples_for_gba_frame(void)
+{
+	host_gba_frac += (u32)OUTPUT_SOUND_FREQUENCY * GBA_RATE_DEN;
+	{
+		u32 n = host_gba_frac / GBA_RATE_NUM;
+		host_gba_frac -= n * GBA_RATE_NUM;
+		return n;
+	}
 }
 
 static void host_audio_pump(void)
 {
-	u32 field_num, field_den, allowed, want, bytes;
-	unsigned int elapsed;
-	char *out;
-
 	if (audio_paused)
 		return;
 
-	if (!host_audio_ready)
+	while (host_pending_frames > 0)
 	{
-		host_audio_v0 = vblank_ticks;
-		host_audio_played = 0;
-		host_audio_last_field = vblank_ticks;
-		host_audio_ready = 1;
-		return;
+		u32 field_num, field_den, allowed, n, bytes;
+		unsigned int elapsed;
+		char *out;
+
+		{
+			u32 saved_frac = host_gba_frac;
+
+			n = host_samples_for_gba_frame();
+			if (n < 32u || n > (u32)AUDIO_OUTPUT_BUFFER_SIZE)
+			{
+				host_gba_frac = saved_frac;
+				host_pending_frames--;
+				continue;
+			}
+
+			if (host_stream_started)
+			{
+				ps2_display_field_rate(&field_num, &field_den);
+				elapsed = vblank_ticks - host_audio_v0;
+				allowed = (u32)(((u64)elapsed * (u64)OUTPUT_SOUND_FREQUENCY * (u64)field_den)
+					/ (u64)field_num);
+				/* Already one frame ahead of the display clock — retry after
+				 * pace waits, do not dump a second frame this field. */
+				if (host_audio_played >= allowed + n)
+				{
+					host_gba_frac = saved_frac;
+					return;
+				}
+			}
+
+			bytes = n * 2u * (u32)sizeof(s16);
+			out = (char *)ps2_sound_buffer;
+			if (!feed_buffer(ps2_sound_buffer, (int)bytes))
+			{
+				/* Do not enqueue silence before the first real buffer: that
+				 * spends DAC time on nothing and leaves game audio late. */
+				if (!host_stream_started)
+				{
+					host_gba_frac = saved_frac;
+					return;
+				}
+				out = (char *)ps2_silence;
+			}
+		}
+
+		if (!host_stream_started)
+		{
+			host_audio_v0 = vblank_ticks;
+			host_audio_played = 0;
+			host_stream_started = 1;
+		}
+
+		audsrv_play_audio(out, (int)bytes);
+		host_audio_played += n;
+		host_pending_frames--;
 	}
-
-	/* At most one enqueue per field so the pace wait cannot burst. */
-	if (vblank_ticks == host_audio_last_field)
-		return;
-	host_audio_last_field = vblank_ticks;
-
-	ps2_display_field_rate(&field_num, &field_den);
-	elapsed = vblank_ticks - host_audio_v0;
-	allowed = (u32)(((u64)elapsed * (u64)OUTPUT_SOUND_FREQUENCY * (u64)field_den)
-		/ (u64)field_num);
-
-	if (host_audio_played + 32u > allowed)
-		return;
-
-	want = allowed - host_audio_played;
-	if (want > (u32)AUDIO_OUTPUT_BUFFER_SIZE)
-		want = (u32)AUDIO_OUTPUT_BUFFER_SIZE;
-	want &= ~1u;
-	if (want < 32u)
-		return;
-
-	bytes = want * 2u * (u32)sizeof(s16);
-	out = (char *)ps2_sound_buffer;
-	if (!feed_buffer(ps2_sound_buffer, (int)bytes))
-		out = (char *)ps2_silence;
-
-	audsrv_play_audio(out, (int)bytes);
-	host_audio_played += want;
 }
 #else
 void ps2_audio_resync(void)
+{
+}
+
+void ps2_audio_begin_frame(void)
 {
 }
 #endif
@@ -324,8 +371,8 @@ signed int ReGBA_AudioUpdate()
 	host_audio_pump();
 #else
 	/* Fallback if the worker thread could not be created. */
-	if (feed_buffer(ps2_sound_buffer, AUDIO_CHUNK_BYTES))
-		audsrv_play_audio((char*)ps2_sound_buffer, AUDIO_CHUNK_BYTES);
+	if (feed_buffer(ps2_sound_buffer, AUDIO_DAC_BYTES))
+		audsrv_play_audio((char*)ps2_sound_buffer, AUDIO_DAC_BYTES);
 #endif
 
 	return 0;

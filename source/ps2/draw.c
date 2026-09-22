@@ -411,7 +411,6 @@ static void pace_reset(void)
 	pace_v0 = vblank_ticks;
 	pace_frames = 0;
 	pace_ready = 1;
-	ps2_audio_resync();
 	printf("Pace: %u/%u fields per GBA frame (vblank ratio, no 1:1 vsync)\n",
 		(unsigned)pace_field_num, (unsigned)PACE_GBA_DEN);
 }
@@ -618,7 +617,9 @@ void ReGBA_RenderScreen(void)
 			unsigned int FramesAhead = (VideoFastForwarded >= AudioFastForwardedCopy)
 				?  VideoFastForwarded - AudioFastForwardedCopy
 				:  0x100 - (AudioFastForwardedCopy - VideoFastForwarded);
-			uint32_t Quota = AUDIO_OUTPUT_BUFFER_SIZE * 3 * OUTPUT_FREQUENCY_DIVISOR + (uint32_t) (FramesAhead * (SOUND_FREQUENCY / 59.73f));
+			/* Two output frames (~33 ms) plus any fast-forward skip.
+			 * The old * 3 left ~100 ms of late samples after an underrun. */
+			uint32_t Quota = AUDIO_OUTPUT_BUFFER_SIZE * OUTPUT_FREQUENCY_DIVISOR + (uint32_t) (FramesAhead * (SOUND_FREQUENCY / 59.73f));
 			u32 Available = ReGBA_GetAudioSamplesAvailable();
 			if (Available > Quota)
 				ReGBA_DiscardAudioSamples(Available - Quota);
