@@ -352,7 +352,26 @@ void ReGBA_VideoFlip()
 volatile int vblank_count = 0;
 
 /* Monotonic field counter. vblank_count is reset every second for FPS. */
-static volatile unsigned int vblank_ticks = 0;
+volatile unsigned int vblank_ticks = 0;
+
+void ps2_display_field_rate(u32 *num, u32 *den)
+{
+	switch (gsGlobal->Mode)
+	{
+		case GS_MODE_PAL:
+			*num = 50;
+			*den = 1;
+			break;
+		case GS_MODE_NTSC:
+			*num = 60000;
+			*den = 1001;
+			break;
+		default:
+			*num = 60;
+			*den = 1;
+			break;
+	}
+}
 
 static int vblank_interrupt_handler(void)
 {
@@ -392,6 +411,7 @@ static void pace_reset(void)
 	pace_v0 = vblank_ticks;
 	pace_frames = 0;
 	pace_ready = 1;
+	ps2_audio_resync();
 	printf("Pace: %u/%u fields per GBA frame (vblank ratio, no 1:1 vsync)\n",
 		(unsigned)pace_field_num, (unsigned)PACE_GBA_DEN);
 }
@@ -446,6 +466,7 @@ static void pace_emulation(void)
 		}
 	}
 	pace_frames++;
+	ReGBA_AudioUpdate();
 }
 
 void init_video()

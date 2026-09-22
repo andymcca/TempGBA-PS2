@@ -211,7 +211,8 @@ void init_audio()
 	/* No worker on PCSX2. A high-priority Count spin starved the menu
 	 * down to ~2 fps. Play from ReGBA_AudioUpdate on the EE main thread. */
 	audio_thread_id = -1;
-	printf("HOST audio: main thread (no worker)\n");
+	ps2_audio_resync();
+	printf("HOST audio: main thread, vblank-clocked (no worker)\n");
 	return;
 #endif
 
@@ -243,6 +244,73 @@ void init_audio()
 	}
 }
 
+#ifdef HOST
+/* This 2018 audsrv has wait_audio but no available/queued. Without a
+ * worker, play_audio from every ReGBA_AudioUpdate (frame + pace spin)
+ * submitted ~2x realtime and overflowed the IOP ring. Clock submissions
+ * to the display field rate instead. */
+static unsigned int host_audio_v0;
+static u32 host_audio_played;
+static unsigned int host_audio_last_field;
+static int host_audio_ready;
+
+void ps2_audio_resync(void)
+{
+	host_audio_ready = 0;
+}
+
+static void host_audio_pump(void)
+{
+	u32 field_num, field_den, allowed, want, bytes;
+	unsigned int elapsed;
+	char *out;
+
+	if (audio_paused)
+		return;
+
+	if (!host_audio_ready)
+	{
+		host_audio_v0 = vblank_ticks;
+		host_audio_played = 0;
+		host_audio_last_field = vblank_ticks;
+		host_audio_ready = 1;
+		return;
+	}
+
+	/* At most one enqueue per field so the pace wait cannot burst. */
+	if (vblank_ticks == host_audio_last_field)
+		return;
+	host_audio_last_field = vblank_ticks;
+
+	ps2_display_field_rate(&field_num, &field_den);
+	elapsed = vblank_ticks - host_audio_v0;
+	allowed = (u32)(((u64)elapsed * (u64)OUTPUT_SOUND_FREQUENCY * (u64)field_den)
+		/ (u64)field_num);
+
+	if (host_audio_played + 32u > allowed)
+		return;
+
+	want = allowed - host_audio_played;
+	if (want > (u32)AUDIO_OUTPUT_BUFFER_SIZE)
+		want = (u32)AUDIO_OUTPUT_BUFFER_SIZE;
+	want &= ~1u;
+	if (want < 32u)
+		return;
+
+	bytes = want * 2u * (u32)sizeof(s16);
+	out = (char *)ps2_sound_buffer;
+	if (!feed_buffer(ps2_sound_buffer, (int)bytes))
+		out = (char *)ps2_silence;
+
+	audsrv_play_audio(out, (int)bytes);
+	host_audio_played += want;
+}
+#else
+void ps2_audio_resync(void)
+{
+}
+#endif
+
 signed int ReGBA_AudioUpdate()
 {
 	if (audio_thread_id >= 0)
@@ -252,9 +320,13 @@ signed int ReGBA_AudioUpdate()
 		return 0;
 	}
 
+#ifdef HOST
+	host_audio_pump();
+#else
 	/* Fallback if the worker thread could not be created. */
 	if (feed_buffer(ps2_sound_buffer, AUDIO_CHUNK_BYTES))
 		audsrv_play_audio((char*)ps2_sound_buffer, AUDIO_CHUNK_BYTES);
+#endif
 
 	return 0;
 }
@@ -264,6 +336,7 @@ void pause_audio()
 	audio_pause_count++;
 	audio_paused = 1;
 	audsrv_stop_audio();
+	ps2_audio_resync();
 }
 
 void resume_audio()
@@ -273,6 +346,7 @@ void resume_audio()
 	if (audio_pause_count == 0)
 	{
 		audio_paused = 0;
+		ps2_audio_resync();
 		wakeup_audio_thread();
 	}
 }

@@ -4,6 +4,7 @@
 void init_audio();
 void pause_audio();
 void resume_audio();
+void ps2_audio_resync();
 
 // Modified by the audio thread to match VideoFastForwarded after it finds
 // that the video thread has skipped a frame. The audio thread must deal

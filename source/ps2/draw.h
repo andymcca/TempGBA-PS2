@@ -115,6 +115,10 @@ void SetMenuResolution();
 
 void SetGameResolution();
 
+/* Display field clock for HOST audio (no audsrv_wait). PAL 50/1, NTSC 60000/1001. */
+void ps2_display_field_rate(u32 *num, u32 *den);
+extern volatile unsigned int vblank_ticks;
+
 void clear_screen(uint16_t color);
 void draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t color);
 void blit_to_screen(uint16_t *src, uint32_t w, uint32_t h, uint32_t dest_x, uint32_t dest_y);
