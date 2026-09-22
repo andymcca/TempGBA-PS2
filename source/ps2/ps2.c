@@ -61,6 +61,10 @@ static int mountParty(char *party);
 static void unmountAllParts();
 static void unmountParty(int i);
 static int fix_hddpath(char *name);
+static int ensure_hdd(void);
+static int is_pfs_dev(const char *s);
+static int resolve_pfs_dir(char *path, int is_main);
+static int parse_hdd0_pfs_argv(const char *argv, char *out);
 
 static void load_modules()
 {
@@ -756,6 +760,106 @@ static void unmountAllParts()
     fileXioStop();
 }
 
+static int ensure_hdd(void)
+{
+	if (hddinited)
+		return 1;
+
+	load_hddmodules();
+	if (hddinit() < 0)
+		return 0;
+	get_part_list();
+	hddinited = 1;
+	return 1;
+}
+
+static int is_pfs_dev(const char *s)
+{
+	return s != NULL
+		&& s[0] == 'p' && s[1] == 'f' && s[2] == 's'
+		&& s[3] >= '0' && s[3] <= '9'
+		&& s[4] == ':';
+}
+
+/* LaunchELF often passes pfs0:/folder/ELF. IOP reset drops that mount.
+ * Try each PFS partition until the directory opens. */
+static int resolve_pfs_dir(char *path, int is_main)
+{
+	char dir[MAX_NAME];
+	char try_path[MAX_NAME];
+	const char *rest;
+	int i, fd, m;
+
+	if (!is_pfs_dev(path))
+		return 0;
+	if (!ensure_hdd())
+		return 0;
+
+	rest = path + 5;
+	if (*rest == '/')
+		rest++;
+	strncpy(dir, rest, MAX_NAME - 1);
+	dir[MAX_NAME - 1] = 0;
+
+	for (i = 0; i < MAX_PARTITIONS; i++)
+	{
+		if (partlist[i][0] == 0)
+			continue;
+		m = mountParty(partlist[i]);
+		if (m < 0)
+			continue;
+		if (dir[0] != 0)
+			sprintf(try_path, "pfs%d:/%s", m, dir);
+		else
+			sprintf(try_path, "pfs%d:/", m);
+		fd = ps2Dopen(try_path);
+		if (fd > 0)
+		{
+			ps2Dclose(fd);
+			strcpy(path, try_path);
+			if (is_main)
+				alwaysMounted = m;
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+/* hdd0:PARTITION:pfs:/dir/file.elf → hdd0:PARTITION:/dir */
+static int parse_hdd0_pfs_argv(const char *argv, char *out)
+{
+	const char *pfs;
+	const char *slash;
+	size_t part_len;
+
+	if (argv == NULL || strncmp(argv, "hdd0:", 5) != 0)
+		return 0;
+
+	pfs = strstr(argv, ":pfs:");
+	if (pfs == NULL)
+		return 0;
+
+	part_len = (size_t)(pfs - argv);
+	if (part_len == 0 || part_len >= MAX_NAME)
+		return 0;
+
+	memcpy(out, argv, part_len);
+	out[part_len] = 0;
+
+	slash = strrchr(pfs + 5, '/');
+	if (slash != NULL && slash > pfs + 5)
+	{
+		size_t n = (size_t)(slash - (pfs + 5));
+		if (part_len + n >= MAX_NAME)
+			n = MAX_NAME - part_len - 1;
+		memcpy(out + part_len, pfs + 5, n);
+		out[part_len + n] = 0;
+	}
+
+	return 1;
+}
+
 int check_dir(char *path, int is_main)
 {
 	int i, fd;
@@ -766,14 +870,8 @@ int check_dir(char *path, int is_main)
 	
 	if(!strncmp(path, "hdd0:", 5))
     {
-    	
-        if(!hddinited)
-        {
-           load_hddmodules();
-           hddinit();
-           get_part_list();       
-           hddinited = 1;            
-        }
+    	if(!ensure_hdd())
+    		return 0;
 		
 		if(path[5] == '/')
 			sprintf(path, "hdd0:%s", (path + 6));
@@ -812,6 +910,10 @@ int check_dir(char *path, int is_main)
 		
 		return 1;
 	}
+
+	/* pfs0:/dir after IOP reset — remount and find the folder. */
+	if (resolve_pfs_dir(path, is_main))
+		return 1;
 	
 	return 0;
 }
@@ -879,6 +981,8 @@ int ps2GetMainPath(char *path, char *argv)
 	int i;
 
 	memset(current_str , 0, MAX_NAME);
+	if (path != NULL)
+		path[0] = 0;
 
 	if(argv != NULL)
 	{
@@ -905,14 +1009,18 @@ int ps2GetMainPath(char *path, char *argv)
 		if(check_dir(path, 1))
 			return 1;
 	}
+
+	if (argv == NULL || argv[0] == 0)
+		return 0;
 	
-	//first check hd boot path
+	// hdd0:PARTITION:pfs:/dir/ELF  (LaunchELF / FMCB)
 	if(!strncmp(argv, "hdd0:", 5))
 	{
-		//hdd0:__sysconf:pfs:/FMCB/FMCB_configurator.elf
+		if (parse_hdd0_pfs_argv(argv, path))
+			return check_dir(path, 1);
+
 		if((p=strrchr(argv, ':'))!=NULL)
 		{
-			
 			sprintf(current_str + (p - argv) - 4, "%s", argv + (p - argv) + 1);
 			
 			if((p=strrchr(current_str, '/')) != NULL)
@@ -924,6 +1032,22 @@ int ps2GetMainPath(char *path, char *argv)
 		}
 		else
 			return 0; 
+	}
+	else if (is_pfs_dev(argv))
+	{
+		/* pfs0:/dir/ELF — mount is gone after IOP reset. */
+		p = strrchr(argv, '/');
+		if (p != NULL && p > argv + 4)
+		{
+			memcpy(path, argv, (size_t)(p - argv));
+			path[p - argv] = 0;
+		}
+		else
+		{
+			memcpy(path, argv, 5);
+			path[5] = 0;
+		}
+		return resolve_pfs_dir(path, 1);
 	}
 	else if(!strncmp(argv, "cdfs:", 5) || !strncmp(argv, "cdrom", 5))
 	{
