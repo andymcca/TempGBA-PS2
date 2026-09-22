@@ -3,6 +3,7 @@
 
 #include <sbv_patches.h>
 #include <loadfile.h>
+#include <kernel.h>
 #include <stdlib.h>
 #include <iopcontrol.h>
 #include <iopheap.h>
@@ -96,10 +97,34 @@ void ps2delay(int count)
 }
 int ps2quit()
 {
-    unmountAllParts();
-	
-	Exit(0);
-    return 1;
+#ifdef HOST
+	return 1;
+#else
+	/* Boot already reset the IOP and replaced LaunchELF's modules.
+	 * Exit(0) tries to return to that dead parent: black screen, and
+	 * the front reset button can stop responding. */
+	pause_audio();
+	unmountAllParts();
+
+	padPortClose(0, 0);
+	padPortClose(1, 0);
+	padEnd();
+
+	fileXioExit();
+
+	while (!SifIopReset(NULL, 0)) {}
+	while (!SifIopSync()) {}
+
+	SifExitRpc();
+	SifInitRpc(0);
+	FlushCache(0);
+	FlushCache(2);
+
+	ExecOSD(0, NULL);
+	LoadExecPS2("rom0:OSDSYS", 0, NULL);
+	while (1) {}
+	return 1;
+#endif
 }
 
 int ps2init()
