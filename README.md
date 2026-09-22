@@ -1,3 +1,20 @@
+# TempGBA-PS2
+
+PlayStation 2 port of TempGBA / ReGBA, forked from [belek666/TempGBA](https://github.com/belek666/TempGBA).
+
+Hardware and PCSX2 stay on **one branch**. `HOST` is a compile flag, not a second tree.
+
+| Target | Command (from `source/ps2`) | Output |
+| --- | --- | --- |
+| Real PS2 | `./build-msys.sh hardware` or `make clean && make` | `TempGBA.elf` |
+| PCSX2 (host filesystem) | `./build-msys.sh pcsx2` or `make pcsx2` | `TempGBA-pcsx2.elf` (`-DHOST`) |
+
+Use the 2018 MSYS PS2SDK (`ee-gcc` 3.2.3). Do not mix object files between the two targets: `make pcsx2` already cleans first; after a PCSX2 build, run `make clean && make` before a hardware ELF. On PCSX2 Qt enable **Host Filesystem** and start `TempGBA-pcsx2.elf`; `host:` is the folder that contains the ELF (`gba_bios.bin`, `game_config.txt`, `rom/`).
+
+The original DSTwo readme follows.
+
+---
+
 TempGBA version 1.45, 2013-09-14
 
 A Game Boy Advance emulator for the Supercard DSTWO.

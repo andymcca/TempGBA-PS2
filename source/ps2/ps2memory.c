@@ -18,6 +18,7 @@
  */
 
 #include "common.h"
+#include <malloc.h>
 
 #if defined USE_MMAP
 static FILE_TAG_TYPE MappedFile = FILE_TAG_INVALID;
@@ -58,12 +59,15 @@ uint8_t* ReGBA_MapEntireROM(FILE_TAG_TYPE File, size_t Size)
 			Next = Size - Done < 65536 ? Size - Done : 65536;
 		}
 		ReGBA_ProgressFinalise();
-#  if TRACE_MEMORY
-		ReGBA_Trace("I: Loaded an entire ROM from file");
-#  endif
+		printf("ROM fully loaded into EE RAM (%u KiB)\r\n", (unsigned)(Size / 1024));
 		FILE_CLOSE(File);
 	}
-	
+	else
+	{
+		printf("ROM malloc failed for %u KiB — falling back to fileXio paging\r\n",
+			(unsigned)(Size / 1024));
+	}
+
 	return Result;
 #else
 	return NULL;
@@ -102,35 +106,35 @@ uint8_t* ReGBA_AllocateROM(size_t Size)
 
 size_t ReGBA_AllocateOnDemandBuffer(void** Buffer)
 {
-	/* At the end of this function, the ROM buffer will have been sized so
-	 * that at least 2 MiB are left for other operations.
-	 */
+	/* Take as much leftover EE heap as we can for 32 KiB ROM pages.
+	 * After the 6 MiB static JIT caches, a 32 MiB ROM will not fit, so this
+	 * buffer IS the working set. Leave 1 MiB for savestates / GUI. */
+	const size_t reserve = 1 * 1024 * 1024;
+	size_t Size = 24 * 1024 * 1024;
 	void* Result = NULL;
 
-	/* Start with trying to get 30 MiB. Let go in 1 MiB increments. */
-	size_t Size = 20 * 1024 * 1024;
-	Result = malloc(Size);
-	while (Result == NULL)
+	while (Size >= (512 * 1024))
 	{
+		Result = memalign(64, Size);
+		if (Result != NULL)
+			break;
 		Size -= 1024 * 1024;
-		Result = malloc(Size);
 	}
 
-	/* Now free the allocation and allocate it again, minus 2 MiB.
-	 * The allocation of 34 MiB above is so that the full 32 MiB of the
-	 * largest allowable GBA ROM size can be allocated on supported
-	 * platforms. */
-	free(Result);
-	Size -= 2 * 1024 * 1024;
-	Result = malloc(Size);
-
-#if TRACE_MEMORY
-	ReGBA_Trace("I: Allocated space for a %u-byte on-demand buffer",
-		Size);
-#endif
+	if (Result != NULL && Size > reserve + (512 * 1024))
+	{
+		free(Result);
+		Size -= reserve;
+		Result = memalign(64, Size);
+	}
 
 	*Buffer = Result;
-	return Size;
+	if (Result != NULL)
+		printf("On-demand ROM buffer: %u KiB (%u pages of 32 KiB)\r\n",
+			(unsigned)(Size / 1024), (unsigned)(Size / (32 * 1024)));
+	else
+		printf("On-demand ROM buffer allocation failed\r\n");
+	return Result != NULL ? Size : 0;
 }
 
 void ReGBA_DeallocateROM(void* Buffer)

@@ -48,10 +48,11 @@ struct timespec {
     long     tv_nsec;       /* nanoseconds */
 };
 
-/* Tuning parameters for the Supercard DSTwo version of gpSP */
-/* Its processor is an Ingenic JZ4740 at 360 MHz with 32 MiB of RAM */
-#define READONLY_CODE_CACHE_SIZE          (1 * 1024 * 1024)
-#define WRITABLE_CODE_CACHE_SIZE          (1 * 1024 * 1024)
+/* Tuning parameters for the PlayStation 2 Emotion Engine (32 MiB RDRAM).
+ * Match the PSP split: 4 MiB of ROM/BIOS translations and 2 MiB of RAM code.
+ * Large (16–32 MiB) ROMs that fail LOAD_ALL_ROM still fall back to paging. */
+#define READONLY_CODE_CACHE_SIZE          (4 * 1024 * 1024)
+#define WRITABLE_CODE_CACHE_SIZE          (2 * 1024 * 1024)
 /* The following parameter needs to be at least enough bytes to hold
  * the generated code for the largest instruction on your platform.
  * In most cases, that will be the ARM instruction

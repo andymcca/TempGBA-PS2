@@ -1,18 +1,36 @@
-//#include <SDL/SDL.h>
-
 #include "common.h"
 #include "../sound.h"
+
+#include <audsrv.h>
+#include <kernel.h>
+#include <string.h>
 
 volatile unsigned int AudioFastForwarded;
 
 #define DAMPEN_SAMPLE_COUNT (AUDIO_OUTPUT_BUFFER_SIZE / 32)
+#define AUDIO_THREAD_STACK_SIZE (8 * 1024)
+/* Lower number = higher priority on the EE. Main is demoted below this. */
+#define AUDIO_THREAD_PRIORITY 0x30
+#define EMU_THREAD_PRIORITY   0x40
+/* Stereo S16: 1476 frames @ 44100 = 33 ms. The earlier * 2 was only
+ * 16.7 ms and could not queue a second chunk ahead of the DAC. */
+#define AUDIO_CHUNK_BYTES     (AUDIO_OUTPUT_BUFFER_SIZE * 2 * (int)sizeof(s16))
 
 #ifdef SOUND_TO_FILE
 FILE* WaveFile;
 #endif
 
-#include <audsrv.h>
 audsrv_fmt_t sound_settings;
+
+extern void *_gp;
+
+static unsigned char ps2_sound_buffer[AUDIO_CHUNK_BYTES] __attribute__((aligned(64)));
+static unsigned char ps2_silence[AUDIO_CHUNK_BYTES] __attribute__((aligned(64)));
+static u8 audio_thread_stack[AUDIO_THREAD_STACK_SIZE] __attribute__((aligned(16)));
+static s32 audio_thread_id = -1;
+static volatile int audio_running = 0;
+static volatile int audio_paused = 1;
+static volatile int audio_pause_count = 0;
 
 static inline void RenderSample(int16_t* Left, int16_t* Right)
 {
@@ -32,7 +50,8 @@ static inline void RenderSample(int16_t* Left, int16_t* Right)
 	}
 }
 
-void feed_buffer(unsigned char *buffer, int len)
+/* Returns 1 if the output buffer was filled, 0 on underrun (buffer untouched). */
+static int feed_buffer(unsigned char *buffer, int len)
 {
 	s16* stream = (s16*) buffer;
 	u32 Samples = ReGBA_GetAudioSamplesAvailable() / OUTPUT_FREQUENCY_DIVISOR;
@@ -41,7 +60,12 @@ void feed_buffer(unsigned char *buffer, int len)
 	u8 WasInUnderrun = Stats.InSoundBufferUnderrun;
 	Stats.InSoundBufferUnderrun = Samples < Requested * 2;
 	if (Stats.InSoundBufferUnderrun && !WasInUnderrun)
+	{
 		Stats.SoundBufferUnderrunCount++;
+		if ((Stats.SoundBufferUnderrunCount % 30) == 1)
+			printf("Audio underrun x%u — skipping stale buffer\r\n",
+				(unsigned)Stats.SoundBufferUnderrunCount);
+	}
 
 	/* There must be AUDIO_OUTPUT_BUFFER_SIZE * 2 samples generated in order
 	 * for the first AUDIO_OUTPUT_BUFFER_SIZE to be valid. Some sound is
@@ -50,10 +74,10 @@ void feed_buffer(unsigned char *buffer, int len)
 	 * generate all of it (at AUDIO_OUTPUT_BUFFER_SIZE * 2), the end may
 	 * still be silence, causing crackling. */
 	if (Samples < Requested * 2)
-		return; // Generate more sound first, please!
-	else
-		Stats.InSoundBufferUnderrun = 0;
-		
+		return 0;
+
+	Stats.InSoundBufferUnderrun = 0;
+
 	s16* Next = stream;
 
 	// Take the first half of the sound.
@@ -67,7 +91,7 @@ void feed_buffer(unsigned char *buffer, int len)
 		*Next++ = Right << 4;
 	}
 	Samples -= Requested / 2;
-	
+
 	// Discard as many samples as are generated in 1 frame, if fast-forwarding.
 	bool Skipped = false;
 	unsigned int VideoFastForwardedCopy = VideoFastForwarded;
@@ -111,60 +135,144 @@ void feed_buffer(unsigned char *buffer, int len)
 			}
 		}
 	}
+
+	return 1;
 }
 
-static unsigned char ps2_sound_buffer[AUDIO_OUTPUT_BUFFER_SIZE * 2];
+static void audio_thread(void *arg)
+{
+	(void)arg;
+
+	while (audio_running)
+	{
+		if (audio_paused)
+		{
+			SleepThread();
+			continue;
+		}
+
+		{
+			char *out = ps2_sound_buffer;
+			if (!feed_buffer(ps2_sound_buffer, AUDIO_CHUNK_BYTES))
+			{
+				/* Silence, not the last chunk (held note) and not Sleep
+				 * (that stops the stream until the next emu wakeup). */
+				out = (char *)ps2_silence;
+			}
+#ifndef HOST
+			/* wait_audio is a sync IOP RPC. On PCSX2 HOST it can stall the
+			 * whole EE for seconds; on hardware it is the DAC clock. */
+			audsrv_wait_audio(AUDIO_CHUNK_BYTES);
+#endif
+			if (!audio_paused && audio_running)
+				audsrv_play_audio(out, AUDIO_CHUNK_BYTES);
+		}
+	}
+
+	SleepThread();
+}
+
+static void wakeup_audio_thread(void)
+{
+	if (audio_thread_id >= 0)
+		WakeupThread(audio_thread_id);
+}
 
 void init_audio()
 {
-	/*SDL_AudioSpec spec;
+	int ret;
 
-	spec.freq = OUTPUT_SOUND_FREQUENCY;
-	spec.format = AUDIO_S16SYS;
-	spec.channels = 2;
-	spec.samples = AUDIO_OUTPUT_BUFFER_SIZE;
-	spec.callback = feed_buffer;
-	spec.userdata = NULL;
-
-	if (SDL_OpenAudio(&spec, NULL) < 0) {
-		ReGBA_Trace("E: Failed to open audio: %s", SDL_GetError());
+	ret = audsrv_init();
+	if (ret != 0)
+	{
+		printf("Audsrv returned error: %s\n", audsrv_get_error_string());
 		return;
 	}
 
-	SDL_PauseAudio(0);*/
-	  int ret;
-	  
-  ret = audsrv_init();
-  if (ret != 0)
-  {
-  	printf("Audsrv returned error: %s\n", audsrv_get_error_string());
+	sound_settings.freq = OUTPUT_SOUND_FREQUENCY;
+	sound_settings.bits = 16;
+	sound_settings.channels = 2;
+
+	ret = audsrv_set_format(&sound_settings);
+	if(ret != AUDSRV_ERR_NOERROR)
+	{
+		printf("Audsrv returned error: %s\n", audsrv_get_error_string());
+		return;
+	}
+
+	audsrv_set_volume(MAX_VOLUME);
+	memset(ps2_silence, 0, sizeof(ps2_silence));
+
+	audio_running = 1;
+	audio_paused = 0;
+	audio_pause_count = 0;
+
+#ifdef HOST
+	/* No worker on PCSX2. A high-priority Count spin starved the menu
+	 * down to ~2 fps. Play from ReGBA_AudioUpdate on the EE main thread. */
+	audio_thread_id = -1;
+	printf("HOST audio: main thread (no worker)\n");
 	return;
-  }
-	
-  sound_settings.freq = OUTPUT_SOUND_FREQUENCY;
-  sound_settings.bits = 16;
-  sound_settings.channels = 2;
-  
-  ret = audsrv_set_format(&sound_settings);
-  if(ret != AUDSRV_ERR_NOERROR)
-  {
-   	printf("Audsrv returned error: %s\n", audsrv_get_error_string());
-   	return;
-  }
-	
-  audsrv_set_volume(MAX_VOLUME);
+#endif
+
+	/* Let the audio worker preempt the emu thread only while it is awake. */
+	ChangeThreadPriority(GetThreadId(), EMU_THREAD_PRIORITY);
+
+	{
+		ee_thread_t thread;
+		memset(&thread, 0, sizeof(thread));
+		thread.func = audio_thread;
+		thread.stack = audio_thread_stack;
+		thread.stack_size = sizeof(audio_thread_stack);
+		thread.gp_reg = &_gp;
+		thread.initial_priority = AUDIO_THREAD_PRIORITY;
+		thread.option = 0;
+		audio_thread_id = CreateThread(&thread);
+		if (audio_thread_id < 0)
+		{
+			printf("Failed to create audio thread (%d); audio stays on the EE main thread\n",
+				(int)audio_thread_id);
+			audio_thread_id = -1;
+			audio_running = 0;
+		}
+		else
+		{
+			StartThread(audio_thread_id, NULL);
+			printf("Audio thread started (id %d)\n", (int)audio_thread_id);
+		}
+	}
 }
 
 signed int ReGBA_AudioUpdate()
 {
-	feed_buffer(ps2_sound_buffer, AUDIO_OUTPUT_BUFFER_SIZE * 2);
-	//audsrv_wait_audio(AUDIO_OUTPUT_BUFFER_SIZE);
-	audsrv_play_audio((char*)ps2_sound_buffer, AUDIO_OUTPUT_BUFFER_SIZE * 2);
+	if (audio_thread_id >= 0)
+	{
+		if (!audio_paused)
+			wakeup_audio_thread();
+		return 0;
+	}
+
+	/* Fallback if the worker thread could not be created. */
+	if (feed_buffer(ps2_sound_buffer, AUDIO_CHUNK_BYTES))
+		audsrv_play_audio((char*)ps2_sound_buffer, AUDIO_CHUNK_BYTES);
 
 	return 0;
 }
 
 void pause_audio()
 {
+	audio_pause_count++;
+	audio_paused = 1;
 	audsrv_stop_audio();
+}
+
+void resume_audio()
+{
+	if (audio_pause_count > 0)
+		audio_pause_count--;
+	if (audio_pause_count == 0)
+	{
+		audio_paused = 0;
+		wakeup_audio_thread();
+	}
 }

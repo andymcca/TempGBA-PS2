@@ -166,7 +166,6 @@ int Setup_Pad(void)
 {
 	int ret, i, port, state, modes;
 
-	padReset();
 	padInit(0);
 
 	for(port=0; port<2; port++){
@@ -343,6 +342,35 @@ struct ps2dirent *ps2Readdir(PS2DIR *d)
 
 	if(!strncmp(d->d_name, "MAIN", 4))
     {
+#ifdef HOST
+        if(dir_ctr > 5)
+        {
+            dir_ctr = 0;
+            return NULL;
+        }
+
+        switch(dir_ctr)
+        {
+              case 0:
+                   if (main_path[0])
+                       sprintf(d->d_entry->d_name, "%s/", main_path);
+                   else
+                       strcpy(d->d_entry->d_name, "host:/");
+                   break;
+              case 1:
+                   sprintf(d->d_entry->d_name, "host:/"); break;
+              case 2:
+                   sprintf(d->d_entry->d_name, "mc0:/"); break;
+              case 3:
+                   sprintf(d->d_entry->d_name, "mc1:/"); break;
+              case 4:
+                   sprintf(d->d_entry->d_name, "mass:/"); break;
+              case 5:
+                   sprintf(d->d_entry->d_name, "cdfs:/"); break;
+              default:
+                      break;
+        }
+#else
         if(dir_ctr > 4)
         {
             dir_ctr = 0;
@@ -363,7 +391,8 @@ struct ps2dirent *ps2Readdir(PS2DIR *d)
                    sprintf(d->d_entry->d_name, "hdd0:/"); break;
               default:
                       break;     
-        }  
+        }
+#endif
 		d->d_entry->d_type = DT_DIR;
 		
 		dir_ctr++;                     
@@ -800,6 +829,44 @@ int ps2DebugScreenInit()
 }
 
 const char cnf_path_mc[] = "mc0:/PS2GBA/MAIN.CFG";
+
+void ps2HostMainPath(char *path, const char *argv0)
+{
+	const char *slash;
+	const char *bslash;
+	const char *cut;
+
+	if (path == NULL)
+		return;
+
+	path[0] = 0;
+	if (argv0 == NULL || argv0[0] == 0)
+	{
+		strcpy(path, "host:");
+		return;
+	}
+
+	slash = strrchr(argv0, '/');
+	bslash = strrchr(argv0, '\\');
+	cut = slash;
+	if (bslash != NULL && (cut == NULL || bslash > cut))
+		cut = bslash;
+
+	if (cut != NULL)
+	{
+		size_t n = (size_t)(cut - argv0);
+		if (n >= MAX_PATH)
+			n = MAX_PATH - 1;
+		memcpy(path, argv0, n);
+		path[n] = 0;
+	}
+	else if (!strncmp(argv0, "host:", 5))
+		strcpy(path, "host:");
+	else
+		strcpy(path, argv0);
+
+	printf("HOST main_path=%s (argv0=%s)\n", path, argv0);
+}
 
 extern u32 parse_line(char *current_line, char *current_str);
 

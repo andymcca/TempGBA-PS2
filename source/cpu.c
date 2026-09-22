@@ -3919,6 +3919,17 @@ void flush_translation_cache(TRANSLATION_REGION_TYPE translation_region,
 		FLUSH_REASON_NAMES[flush_reason]);
 #endif
 	Stats.TranslationFlushCount[translation_region][flush_reason]++;
+#ifdef _EE
+	if (flush_reason == FLUSH_REASON_FULL_CACHE)
+	{
+		printf("JIT: full flush of %s cache (#%u, %u KiB limit)\r\n",
+			(translation_region == TRANSLATION_REGION_READONLY) ? "read-only" : "writable",
+			(unsigned)Stats.TranslationFlushCount[translation_region][flush_reason],
+			(translation_region == TRANSLATION_REGION_READONLY)
+				? (unsigned)(READONLY_CODE_CACHE_SIZE / 1024)
+				: (unsigned)(WRITABLE_CODE_CACHE_SIZE / 1024));
+	}
+#endif
 	switch (translation_region)
 	{
 		case TRANSLATION_REGION_READONLY:

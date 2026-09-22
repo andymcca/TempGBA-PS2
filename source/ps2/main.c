@@ -175,7 +175,7 @@ int main(int argc, char *argv[])
 	init_audio();
 
 #ifdef HOST
-	getcwd(main_path, MAX_PATH);
+	ps2HostMainPath(main_path, (argc > 0) ? argv[0] : NULL);
 #else
 	if(!ps2GetMainPath(main_path, (char *)argv[0]))
 	{
@@ -194,10 +194,8 @@ int main(int argc, char *argv[])
 	if(load_bios(file) == -1)
 	{
 		printf("No GBA BIOS was found.\n");
-		/*ReGBA_ProgressUpdate(2, 2);
 		ReGBA_ProgressFinalise();
-
-		ShowErrorScreen("The GBA BIOS was not found in location: "
+		/*ShowErrorScreen("The GBA BIOS was not found in location: "
 			"\n%s\n The file needs "
 			"to be named gba_bios.bin.", main_path);
 
@@ -213,14 +211,26 @@ int main(int argc, char *argv[])
 	init_main();
 	init_sound();
 
+	{
+	const char *boot_rom = (argc > 1) ? argv[1] : NULL;
 #ifdef HOST
-	argc = 2;
-	argv[1] = "host:rom/rom.gba";
+	static char host_rom[MAX_PATH];
+	if (boot_rom == NULL)
+	{
+		FILE_TAG_TYPE host_rom_fd;
+		sprintf(host_rom, "%s/rom/rom.gba", main_path);
+		FILE_OPEN(host_rom_fd, host_rom, READ);
+		if (FILE_CHECK_VALID(host_rom_fd))
+		{
+			FILE_CLOSE(host_rom_fd);
+			boot_rom = host_rom;
+		}
+	}
 #endif
 
-	if(argc > 1)
+	if(boot_rom)
 	{
-		if(load_gamepak(argv[1]) == -1)
+		if(load_gamepak(boot_rom) == -1)
 		{
 			if(errno != 0)
 				ShowErrorScreen("Loading ROM failed: %s", strerror(errno));
@@ -276,6 +286,7 @@ loadrom:
 
 			init_cpu(ResolveSetting(BootFromBIOS, PerGameBootFromBIOS) /* in port.c */);
 		}
+	}
 	}
 
 	// We'll never actually return from here.

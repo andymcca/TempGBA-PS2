@@ -227,5 +227,25 @@ bool ReGBA_GetBundledGameConfig(char* Result)
 
 void ReGBA_OnGameLoaded(const char* GamePath)
 {
+	extern u32 gamepak_size;
+
+	printf("JIT caches: read-only %u KiB, writable %u KiB\r\n",
+		(unsigned)(READONLY_CODE_CACHE_SIZE / 1024),
+		(unsigned)(WRITABLE_CODE_CACHE_SIZE / 1024));
+
+	if (FILE_CHECK_VALID(gamepak_file_large))
+	{
+		printf("WARNING: '%s' is paged from storage (%u KiB file, %u KiB buffer). "
+			"fileXio page-ins can hitch or freeze.\r\n",
+			GamePath,
+			(unsigned)(gamepak_size / 1024),
+			(unsigned)(gamepak_ram_buffer_size / 1024));
+	}
+	else
+	{
+		printf("ROM resident: '%s' (%u KiB in EE RAM, no fileXio paging)\r\n",
+			GamePath,
+			(unsigned)(gamepak_ram_buffer_size / 1024));
+	}
 }
 

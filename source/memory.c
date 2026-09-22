@@ -97,10 +97,17 @@ u32 cpu_dma_last;
 u8 *gamepak_rom = NULL;
 u32 gamepak_size;
 
-u32 gamepak_next_swap;
-
 u32 gamepak_ram_buffer_size;
 u32 gamepak_ram_pages;
+
+/* LRU bookkeeping for 32 KiB ROM pages when the whole image is not resident. */
+static u32 page_time = 1;
+
+typedef struct
+{
+	u32 page_timestamp;
+	u16 physical_index;
+} GamepakSwapEntryType;
 
 char gamepak_title[13];
 char gamepak_code[5];
@@ -112,8 +119,8 @@ bool IsZippedROM = false; // true if the current ROM came directly from a
 
 bool IsNintendoBIOS = false;
 
-// Enough to map the gamepak RAM space.
-u16 ALIGN_DATA gamepak_memory_map[1024];
+/* One slot per 32 KiB window that fits in the on-demand buffer (max 32 MiB). */
+static GamepakSwapEntryType ALIGN_DATA gamepak_memory_map[1024];
 
 // This is global so that it can be kept open for large ROMs to swap
 // pages from, so there's no slowdown with opening and closing the file
@@ -2546,35 +2553,62 @@ CPU_ALERT_TYPE dma_transfer(DmaTransferType *dma)
   }                                                                           \
 
 
-static u32 evict_gamepak_page(void)
+static void map_gamepak_slot(u32 slot, u32 physical_index)
 {
-	// We will evict the page with index gamepak_next_swap, a bit like a ring
-	// buffer.
-	u32 page_index = gamepak_next_swap;
-	gamepak_next_swap++;
-	if (gamepak_next_swap >= gamepak_ram_pages)
-		gamepak_next_swap = 0;
-	u16 physical_index = gamepak_memory_map[page_index];
+	u8 *location = gamepak_rom + slot * (32 * 1024);
 
+	memory_map_read[(0x8000000 / (32 * 1024)) + physical_index] = location;
+	memory_map_read[(0xA000000 / (32 * 1024)) + physical_index] = location;
+	memory_map_read[(0xC000000 / (32 * 1024)) + physical_index] = location;
+}
+
+static void unmap_gamepak_physical(u32 physical_index)
+{
 	memory_map_read[(0x8000000 / (32 * 1024)) + physical_index] = NULL;
 	memory_map_read[(0xA000000 / (32 * 1024)) + physical_index] = NULL;
 	memory_map_read[(0xC000000 / (32 * 1024)) + physical_index] = NULL;
+}
+
+static u32 evict_gamepak_page(void)
+{
+	/* Oldest timestamp, with unused (timestamp 0) slots preferred. */
+	u32 page_index = 0;
+	u32 smallest = gamepak_memory_map[0].page_timestamp;
+	u32 i;
+
+	for (i = 1; i < gamepak_ram_pages; i++)
+	{
+		if (gamepak_memory_map[i].page_timestamp <= smallest)
+		{
+			smallest = gamepak_memory_map[i].page_timestamp;
+			page_index = i;
+		}
+	}
+
+	if (smallest != 0)
+		unmap_gamepak_physical(gamepak_memory_map[page_index].physical_index);
 
 #if TRACE_MEMORY
-	ReGBA_Trace("T: Evicting virtual page %u", page_index);
+	ReGBA_Trace("T: Evicting virtual page %u (phys %u, ts %u)",
+		page_index, gamepak_memory_map[page_index].physical_index, smallest);
 #endif
-	
+
 	return page_index;
 }
 
 u8 *load_gamepak_page(u16 physical_index)
 {
-	if (memory_map_read[(0x08000000 / (32 * 1024)) + (uint32_t) physical_index] != NULL)
+	u8 *already = memory_map_read[(0x08000000 / (32 * 1024)) + (uint32_t) physical_index];
+	if (already != NULL)
 	{
+		/* Hit: bump LRU so this page is not the next eviction. */
+		u32 slot = (u32)(already - gamepak_rom) / (32 * 1024);
+		if (slot < gamepak_ram_pages)
+			gamepak_memory_map[slot].page_timestamp = page_time++;
 #if TRACE_MEMORY
 		ReGBA_Trace("T: Not reloading already loaded Game Pak page %u (%08X..%08X)", (uint32_t) physical_index, 0x08000000 + physical_index * (32 * 1024), 0x08000000 + (uint32_t) physical_index * (32 * 1024) + 0x7FFF);
 #endif
-		return memory_map_read[(0x08000000 / (32 * 1024)) + (uint32_t) physical_index];
+		return already;
 	}
 #if TRACE_MEMORY
 	ReGBA_Trace("T: Loading Game Pak page %u (%08X..%08X)", (uint32_t) physical_index, 0x08000000 + (uint32_t) physical_index * (32 * 1024), 0x08000000 + (uint32_t) physical_index * (32 * 1024) + 0x7FFF);
@@ -2582,24 +2616,49 @@ u8 *load_gamepak_page(u16 physical_index)
 	if((uint32_t) physical_index >= (gamepak_size >> 15))
 		return gamepak_rom;
 
-	u16 page_index = evict_gamepak_page();
-	u32 page_offset = (uint32_t) page_index * (32 * 1024);
+	u32 page_index = evict_gamepak_page();
+	u32 page_offset = page_index * (32 * 1024);
 	u8 *swap_location = gamepak_rom + page_offset;
 
-	gamepak_memory_map[page_index] = physical_index;
+	gamepak_memory_map[page_index].physical_index = physical_index;
+	gamepak_memory_map[page_index].page_timestamp = page_time++;
 
+#ifdef _EE
+	{
+		static u32 page_in_count = 0;
+		page_in_count++;
+		if (page_in_count == 1 || (page_in_count % 64) == 0)
+			printf("fileXio ROM page-in #%u (page %u) — ROM is not fully resident\r\n",
+				(unsigned)page_in_count, (unsigned)physical_index);
+	}
+#endif
 	FILE_SEEK(gamepak_file_large, (off_t) physical_index * (32 * 1024), SEEK_SET);
 	FILE_READ(gamepak_file_large, swap_location, (32 * 1024));
 
-	memory_map_read[(0x8000000 / (32 * 1024)) + physical_index] =
-		memory_map_read[(0xA000000 / (32 * 1024)) + physical_index] =
-		memory_map_read[(0xC000000 / (32 * 1024)) + physical_index] = swap_location;
+	map_gamepak_slot(page_index, physical_index);
 
 	// If RTC is active page the RTC register bytes so they can be read
 	if((rtc_state != RTC_DISABLED) && (physical_index == 0))
 	{
 		memcpy(swap_location + 0xC4, rtc_registers, sizeof(rtc_registers));
 	}
+
+#ifdef _EE
+	/* Sequential code/assets almost always need the next 32 KiB too.
+	 * Prefetch it while the file pointer is nearby. */
+	{
+		static int prefetch_depth = 0;
+		u32 next = (u32)physical_index + 1;
+		if (prefetch_depth == 0 &&
+		    next < (gamepak_size >> 15) &&
+		    memory_map_read[(0x08000000 / (32 * 1024)) + next] == NULL)
+		{
+			prefetch_depth = 1;
+			load_gamepak_page((u16)next);
+			prefetch_depth = 0;
+		}
+	}
+#endif
 
 	return swap_location;
 }
@@ -2610,14 +2669,17 @@ static void init_memory_gamepak(void)
 
   if (FILE_CHECK_VALID(gamepak_file_large))
   {
-    // Large ROMs get special treatment because they
-    // can't fit into the ROM buffer.
-    // The size of this buffer varies per platform, and may actually
-    // fit all of the ROM, in which case this is dead code.
-    memset(gamepak_memory_map, 0, sizeof(gamepak_memory_map));
-    gamepak_next_swap = 0;
+    u32 i;
 
     MAP_NULL(read, 0x8000000, 0xE000000);
+
+    /* Restore maps for pages already sitting in the on-demand buffer so a
+     * reset does not throw away a filled cache and re-read from fileXio. */
+    for (i = 0; i < gamepak_ram_pages; i++)
+    {
+      if (gamepak_memory_map[i].page_timestamp != 0)
+        map_gamepak_slot(i, gamepak_memory_map[i].physical_index);
+    }
   }
   else
   {
@@ -2708,28 +2770,169 @@ void init_memory(void)
   read_ram_region = 0xFFFFFFFF;
 }
 
+static void scan_backup_id_word(u32 *data, u32 *find_id, BACKUP_TYPE_TYPE backup_type_id[2])
+{
+  if (*find_id > 1)
+    return;
+
+  switch (data[0])
+  {
+    case ('E' | ('E' << 8) | ('P' << 16) | ('R' << 24)):
+      // EEPROM_Vxxx : EEPROM 512 bytes or 8 Kbytes (4Kbit or 64Kbit)
+      if (memcmp(data, "EEPROM_V", 8) == 0)
+      {
+        backup_type_id[*find_id] = BACKUP_EEPROM;
+        (*find_id)++;
+        memcpy(backup_id, data, 11);
+        backup_id[11] = 0;
+      }
+      break;
+
+    case ('S' | ('R' << 8) | ('A' << 16) | ('M' << 24)):
+      // SRAM_Vxxx : SRAM 32 Kbytes (256Kbit)
+      if (memcmp(data, "SRAM_V", 6) == 0)
+      {
+        backup_type_id[*find_id] = BACKUP_SRAM;
+        (*find_id)++;
+        memcpy(backup_id, data, 9);
+        backup_id[9] = 0;
+      }
+      // SRAM_F_Vxxx : FRAM 32 Kbytes (256Kbit)
+      if (memcmp(data, "SRAM_F", 6) == 0)
+      {
+        backup_type_id[*find_id] = BACKUP_SRAM;
+        (*find_id)++;
+        memcpy(backup_id, data, 11);
+        backup_id[11] = 0;
+      }
+      break;
+
+    case ('F' | ('L' << 8) | ('A' << 16) | ('S' << 24)):
+      // FLASH_Vxxx : FLASH 64 Kbytes (512Kbit) (ID used in older files)
+      if (memcmp(data, "FLASH_V", 7) == 0)
+      {
+        backup_type_id[*find_id] = BACKUP_FLASH;
+        (*find_id)++;
+        flash_size  = FLASH_SIZE_64KB;
+        flash_device_id = FLASH_DEVICE_PANASONIC_64KB;
+        flash_manufacturer_id = FLASH_MANUFACTURER_PANASONIC;
+        memcpy(backup_id, data, 10);
+        backup_id[10] = 0;
+      }
+      // FLASH512_Vxxx : FLASH 64 Kbytes (512Kbit) (ID used in newer files)
+      if (memcmp(data, "FLASH512", 8) == 0)
+      {
+        backup_type_id[*find_id] = BACKUP_FLASH;
+        (*find_id)++;
+        flash_size  = FLASH_SIZE_64KB;
+        flash_device_id = FLASH_DEVICE_PANASONIC_64KB;
+        flash_manufacturer_id = FLASH_MANUFACTURER_PANASONIC;
+        memcpy(backup_id, data, 13);
+        backup_id[13] = 0;
+      }
+      // FLASH1M_Vxxx : FLASH 128 Kbytes (1Mbit)
+      if (memcmp(data, "FLASH1M_", 8) == 0)
+      {
+        backup_type_id[*find_id] = BACKUP_FLASH;
+        (*find_id)++;
+        flash_size  = FLASH_SIZE_128KB;
+        flash_device_id = FLASH_DEVICE_SANYO_128KB;
+        flash_manufacturer_id = FLASH_MANUFACTURER_SANYO;
+        memcpy(backup_id, data, 12);
+        backup_id[12] = 0;
+      }
+      break;
+  }
+}
+
+static void finish_backup_id(u32 find_id, BACKUP_TYPE_TYPE backup_type_id[2])
+{
+  if (find_id > 1)
+  {
+    if (backup_type_id[0] == backup_type_id[1])
+    {
+      backup_type = backup_type_id[0];
+      return;
+    }
+
+    backup_type = BACKUP_NONE;
+    flash_size  = FLASH_SIZE_64KB;
+    flash_device_id = FLASH_DEVICE_PANASONIC_64KB;
+    flash_manufacturer_id = FLASH_MANUFACTURER_PANASONIC;
+    backup_id[0] = 0;
+    return;
+  }
+
+  backup_type = backup_type_id[0];
+}
+
 static void load_backup_id(void)
 {
   u32 addr;
-
   u8 *block = NULL;
   u32 *data = NULL;
-
   u32 region = 0xFFFFFFFF;
   u32 new_region = 0;
-
-  init_memory_gamepak();
-
   u32 find_id = 0;
   BACKUP_TYPE_TYPE backup_type_id[2] = { BACKUP_NONE, };
 
-  backup_type = BACKUP_NONE;
+  init_memory_gamepak();
 
+  backup_type = BACKUP_NONE;
   sram_size   = SRAM_SIZE_32KB;
   flash_size  = FLASH_SIZE_64KB;
   eeprom_size = EEPROM_512_BYTE;
-
   backup_id[0] = 0;
+
+  /* Paged ROMs: scan from the file so we do not evict the working set, and
+   * keep the first N pages (typically code at 08000000) in the buffer. */
+  if (FILE_CHECK_VALID(gamepak_file_large) && gamepak_rom != NULL && gamepak_ram_pages > 0)
+  {
+    static u8 scan_scratch[32 * 1024];
+    u32 rom_pages = gamepak_size >> 15;
+    u32 prefill = gamepak_ram_pages;
+    u32 phys, off;
+
+    if (prefill > rom_pages)
+      prefill = rom_pages;
+
+    FILE_SEEK(gamepak_file_large, 0, SEEK_SET);
+
+    for (phys = 0; phys < rom_pages; phys++)
+    {
+      int filling = (phys < prefill);
+      u8 *dest = filling ? (gamepak_rom + phys * (32 * 1024)) : scan_scratch;
+
+      FILE_READ(gamepak_file_large, dest, 32 * 1024);
+
+      if (filling)
+      {
+        gamepak_memory_map[phys].physical_index = (u16)phys;
+        map_gamepak_slot(phys, phys);
+      }
+
+      if (find_id <= 1)
+      {
+        for (off = 0; off < (32 * 1024); off += 4)
+          scan_backup_id_word((u32 *)(dest + off), &find_id, backup_type_id);
+      }
+      else if (!filling)
+        break;
+    }
+
+    /* Page 0 is newest so the first eviction drops the tail of the prefill. */
+    page_time = 1;
+    for (phys = prefill; phys > 0; phys--)
+      gamepak_memory_map[phys - 1].page_timestamp = page_time++;
+
+#ifdef _EE
+    printf("ROM page cache prefilled: %u/%u pages (%u KiB resident at 08000000)\r\n",
+      (unsigned)prefill, (unsigned)rom_pages, (unsigned)(prefill * 32));
+#endif
+
+    finish_backup_id(find_id, backup_type_id);
+    return;
+  }
 
   for (addr = 0x08000000; addr < 0x08000000 + gamepak_size; addr += 4)
   {
@@ -2745,118 +2948,12 @@ static void load_backup_id(void)
     }
 
     data = (u32 *)(block + (addr & 0x7FFC));
-
-    switch (data[0])
-    {
-      case ('E' | ('E' << 8) | ('P' << 16) | ('R' << 24)):
-      {
-        // EEPROM_Vxxx : EEPROM 512 bytes or 8 Kbytes (4Kbit or 64Kbit)
-        if (memcmp(data, "EEPROM_V", 8) == 0)
-        {
-          backup_type_id[find_id] = BACKUP_EEPROM;
-          find_id++;
-
-          memcpy(backup_id, data, 11);
-          backup_id[11] = 0;
-        }
-      }
+    scan_backup_id_word(data, &find_id, backup_type_id);
+    if (find_id > 1)
       break;
-
-      case ('S' | ('R' << 8) | ('A' << 16) | ('M' << 24)):
-      {
-        // SRAM_Vxxx : SRAM 32 Kbytes (256Kbit)
-        if (memcmp(data, "SRAM_V", 6) == 0)
-        {
-          backup_type_id[find_id] = BACKUP_SRAM;
-          find_id++;
-
-          memcpy(backup_id, data, 9);
-          backup_id[9] = 0;
-        }
-
-        // SRAM_F_Vxxx : FRAM 32 Kbytes (256Kbit)
-        if (memcmp(data, "SRAM_F", 6) == 0)
-        {
-          backup_type_id[find_id] = BACKUP_SRAM;
-          find_id++;
-
-          memcpy(backup_id, data, 11);
-          backup_id[11] = 0;
-        }
-      }
-      break;
-
-      case ('F' | ('L' << 8) | ('A' << 16) | ('S' << 24)):
-      {
-        // FLASH_Vxxx : FLASH 64 Kbytes (512Kbit) (ID used in older files)
-        if (memcmp(data, "FLASH_V", 7) == 0)
-        {
-          backup_type_id[find_id] = BACKUP_FLASH;
-          find_id++;
-
-          flash_size  = FLASH_SIZE_64KB;
-          flash_device_id = FLASH_DEVICE_PANASONIC_64KB;
-          flash_manufacturer_id = FLASH_MANUFACTURER_PANASONIC;
-
-          memcpy(backup_id, data, 10);
-          backup_id[10] = 0;
-        }
-
-        // FLASH512_Vxxx : FLASH 64 Kbytes (512Kbit) (ID used in newer files)
-        if (memcmp(data, "FLASH512", 8) == 0)
-        {
-          backup_type_id[find_id] = BACKUP_FLASH;
-          find_id++;
-
-          flash_size  = FLASH_SIZE_64KB;
-          flash_device_id = FLASH_DEVICE_PANASONIC_64KB;
-          flash_manufacturer_id = FLASH_MANUFACTURER_PANASONIC;
-
-          memcpy(backup_id, data, 13);
-          backup_id[13] = 0;
-        }
-
-        // FLASH1M_Vxxx : FLASH 128 Kbytes (1Mbit)
-        if (memcmp(data, "FLASH1M_", 8) == 0)
-        {
-          backup_type_id[find_id] = BACKUP_FLASH;
-          find_id++;
-
-          flash_size  = FLASH_SIZE_128KB;
-          flash_device_id = FLASH_DEVICE_SANYO_128KB;
-          flash_manufacturer_id = FLASH_MANUFACTURER_SANYO;
-
-          memcpy(backup_id, data, 12);
-          backup_id[12] = 0;
-        }
-      }
-      break;
-    }
-
-    if (find_id > 1) break;
   }
 
-  if (find_id > 1)
-  {
-    // backup_id same
-    if (backup_type_id[0] == backup_type_id[1])
-    {
-      backup_type = backup_type_id[0];
-      return;
-    }
-
-    // backup_id different
-    backup_type = BACKUP_NONE;
-
-    flash_size  = FLASH_SIZE_64KB;
-    flash_device_id = FLASH_DEVICE_PANASONIC_64KB;
-    flash_manufacturer_id = FLASH_MANUFACTURER_PANASONIC;
-
-    backup_id[0] = 0;
-    return;
-  }
-
-  backup_type = backup_type_id[0];
+  finish_backup_id(find_id, backup_type_id);
 }
 
 u32 load_backup(void)
@@ -3203,6 +3300,12 @@ static ssize_t load_gamepak_raw(char *name_path)
 			// Read in just enough for the header
 			gamepak_file_large = gamepak_file;
 			gamepak_ram_buffer_size = ReGBA_AllocateOnDemandBuffer((void**) &gamepak_rom);
+			if (gamepak_rom == NULL || gamepak_ram_buffer_size == 0)
+			{
+				FILE_CLOSE(gamepak_file);
+				gamepak_file_large = FILE_TAG_INVALID;
+				return -1;
+			}
 			FILE_READ(gamepak_file, gamepak_rom, 0x100);
 		}
 		else
@@ -3249,6 +3352,8 @@ size_t load_gamepak(char *file_path)
 		gamepak_size = 0;
 		gamepak_rom = NULL;
 		gamepak_ram_buffer_size = gamepak_ram_pages = 0;
+		memset(gamepak_memory_map, 0, sizeof(gamepak_memory_map));
+		page_time = 1;
 	}
 
 	ssize_t file_size;

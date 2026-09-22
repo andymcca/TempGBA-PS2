@@ -18,6 +18,7 @@
  */
 
 #include "common.h"
+#include <kernel.h>
 
 struct StringCut {
 	uint32_t Start;  // Starting character index of the cut, inclusive.
@@ -183,27 +184,23 @@ void gsReload()
 			gsGlobal->Mode = GS_MODE_PAL;
 			gsGlobal->Interlace = GS_INTERLACED;
 			gsGlobal->Field = GS_FIELD;
-			//gsGlobal->Width = 640;
-			//gsGlobal->Height = 512;
-			gsGlobal->Width = 704;
-			gsGlobal->Height = 576;
+			/* 704x576 was an overscan hack; PCSX2 and many TVs crop the
+			 * right ~10% because the display window is 640 wide. */
+			gsGlobal->Width = 640;
+			gsGlobal->Height = 512;
 			break;
 		case ntsc:
 			gsGlobal->Mode = GS_MODE_NTSC;
 			gsGlobal->Interlace = GS_INTERLACED;
 			gsGlobal->Field = GS_FIELD;
-			//gsGlobal->Width = 640;
-			//gsGlobal->Height = 448;
-			gsGlobal->Width = 704;
-			gsGlobal->Height = 480;
+			gsGlobal->Width = 640;
+			gsGlobal->Height = 448;
 			break;
 		case dtv_480p:
 			gsGlobal->Mode = GS_MODE_DTV_480P;
 			gsGlobal->Interlace = GS_NONINTERLACED;
 			gsGlobal->Field = GS_FRAME;
-			//gsGlobal->Width = 640;
-			//gsGlobal->Height = 480;
-			gsGlobal->Width = 704;
+			gsGlobal->Width = 640;
 			gsGlobal->Height = 480;
 			break;
 		case dtv_720p:
@@ -337,20 +334,118 @@ void ReGBA_VideoFlip()
 						    	gsx2 - overscanX, gsy2 - overscanY * y_fix, //x2,y2
 						    	gsTexture.Width - 0.375f, gsTexture.Height - 0.375f, //u2, v2
 						    	1.0f, TEXTURE_RGBAQ);
-	
-	gsKit_sync_flip(gsGlobal);
+
+	/* Submit the GS packet. Gameplay does not block here — pace_emulation()
+	 * holds the EE to 59.73 Hz. The menu can still use a full sync flip. */
 	gsKit_queue_exec(gsGlobal);
+	if (menu_res)
+	{
+		gsKit_sync_flip(gsGlobal);
+	}
+	else
+	{
+		gsKit_vsync_nowait();
+		gsKit_setactive(gsGlobal);
+	}
 }
 
 volatile int vblank_count = 0;
 
+/* Monotonic field counter. vblank_count is reset every second for FPS. */
+static volatile unsigned int vblank_ticks = 0;
+
 static int vblank_interrupt_handler(void)
 {
 	vblank_count++;
-  
+	vblank_ticks++;
+
 	ExitHandler();
-  
+
 	return 0;
+}
+
+#define AUDIO_THREAD_PRIO 0x30
+/* 59.7275 Hz as 597275/10000. Reduced with field rates by /25. */
+#define PACE_GBA_DEN 23891u
+
+static u32 pace_field_num; /* 20000 PAL, 23976 NTSC, 24000 60 Hz */
+static unsigned int pace_v0;
+static u32 pace_frames;
+static int pace_ready;
+
+static u32 pace_field_num_for_mode(void)
+{
+	switch (gsGlobal->Mode)
+	{
+		case GS_MODE_PAL:
+			return 20000u;  /* 50 Hz */
+		case GS_MODE_NTSC:
+			return 23976u;  /* 59.94 Hz */
+		default:
+			return 24000u;  /* 60 Hz */
+	}
+}
+
+static void pace_reset(void)
+{
+	pace_field_num = pace_field_num_for_mode();
+	pace_v0 = vblank_ticks;
+	pace_frames = 0;
+	pace_ready = 1;
+	printf("Pace: %u/%u fields per GBA frame (vblank ratio, no 1:1 vsync)\n",
+		(unsigned)pace_field_num, (unsigned)PACE_GBA_DEN);
+}
+
+/* Hold 59.73 GBA frames per display-second without 1:1 vsync.
+ * target_fields = frames * field_hz / 59.7275
+ * PAL: 60 frames wait for ~50 fields (not 60), so we are not 50 Hz-slow
+ * and not free-running. COP0 Count is not used — PCSX2 and real PAL
+ * disagree on Count vs assumed field rate, which produced ~70 emu fps. */
+static void pace_emulation(void)
+{
+	u64 target;
+	unsigned int elapsed;
+	unsigned int last;
+
+	if (FastForwardFrameskip > 0 || !synchronize_flag)
+	{
+		pace_ready = 0;
+		return;
+	}
+
+	if (!pace_ready)
+		pace_reset();
+
+	target = ((u64)pace_frames * (u64)pace_field_num) / (u64)PACE_GBA_DEN;
+	elapsed = vblank_ticks - pace_v0;
+
+	if (elapsed > (unsigned int)target + 8)
+	{
+		/* More than ~8 fields behind — resync rather than free-running. */
+		pace_v0 = vblank_ticks;
+		pace_frames = 1;
+		return;
+	}
+
+	last = vblank_ticks;
+	{
+		u32 guard;
+		__asm__ volatile("mfc0 %0, $9" : "=r"(guard));
+		while ((unsigned int)(vblank_ticks - pace_v0) < (unsigned int)target)
+		{
+			u32 nowc;
+			if (vblank_ticks == last)
+			{
+				ReGBA_AudioUpdate();
+				RotateThreadReadyQueue(AUDIO_THREAD_PRIO);
+			}
+			last = vblank_ticks;
+			__asm__ volatile("mfc0 %0, $9" : "=r"(nowc));
+			if ((u32)(nowc - guard) > 8000000u)
+				break;
+		}
+	}
+	pace_frames++;
 }
 
 void init_video()
@@ -438,6 +533,7 @@ void SetGameResolution()
 	
 	menu_res = 0;
 	vblank_count = 0;
+	pace_ready = 0;
 	Stats.RenderedFPS = 0;
 	Stats.EmulatedFPS = 0;
 	
@@ -454,31 +550,11 @@ void ReGBA_RenderScreen(void)
 		
 		Stats.RenderedFPS = Stats.RenderedFrames;
 		Stats.EmulatedFPS = Stats.EmulatedFrames;
-		
-		if(Stats.EmulatedFrames < 59)
-		{
-			if(skip_frame == -1)
-				skip_frame = 60.0 / (Stats.RenderedFrames - (60.0/(3600.0/(Stats.RenderedFrames*Stats.EmulatedFrames))));
-			else
-				skip_frame -= (60.0 - Stats.EmulatedFrames)/100;
-		}
-		else if(Stats.EmulatedFPS > 61)
-		{
-			skip_frame += (Stats.EmulatedFrames - 60.0)/100;
-		}
-		
-		if(Stats.RenderedFPS > 58)
-		{
-			skip_frame = -1;
-		}
-		
-		if(skip_frame <= 1.0)
-		{
-			skip_frame = -1;
-		}
-		
-		//sio_printf("skip_frame %f frame %d\n", skip_frame, Stats.EmulatedFrames);
-		
+
+		/* Auto skip_frame treated "70 emu / 50 PAL vblanks" as "too fast"
+		 * and started dropping draws, which made 52/70 and chopped audio.
+		 * Vblank-ratio pacing holds ~60 emu; user frameskip still applies. */
+		skip_frame = -1;
 		skip_ctr = skip_frame;
 		
 		vblank_count = 0;
@@ -513,22 +589,22 @@ void ReGBA_RenderScreen(void)
 	
 		ReGBA_DisplayFPS();
 		ReGBA_VideoFlip();
-		
-		while (true) //fix the problem with this
+
+		/* One-shot trim. The old unbounded while(true) could spin forever
+		 * if the ring level never dropped below Quota. */
 		{
 			unsigned int AudioFastForwardedCopy = AudioFastForwarded;
 			unsigned int FramesAhead = (VideoFastForwarded >= AudioFastForwardedCopy)
 				?  VideoFastForwarded - AudioFastForwardedCopy
 				:  0x100 - (AudioFastForwardedCopy - VideoFastForwarded);
 			uint32_t Quota = AUDIO_OUTPUT_BUFFER_SIZE * 3 * OUTPUT_FREQUENCY_DIVISOR + (uint32_t) (FramesAhead * (SOUND_FREQUENCY / 59.73f));
-			if (ReGBA_GetAudioSamplesAvailable() <= Quota)
-				break;
-			else
-				ReGBA_DiscardAudioSamples(Quota);
-				
-			//usleep(1000);
+			u32 Available = ReGBA_GetAudioSamplesAvailable();
+			if (Available > Quota)
+				ReGBA_DiscardAudioSamples(Available - Quota);
 		}
 	}
+
+	pace_emulation();
 
 	if (ReGBA_GetAudioSamplesAvailable() < AUDIO_OUTPUT_BUFFER_SIZE * 2 * OUTPUT_FREQUENCY_DIVISOR)
 	{
@@ -904,4 +980,5 @@ void ReGBA_ProgressUpdate(uint32_t Current, uint32_t Total)
 void ReGBA_ProgressFinalise()
 {
 	InFileAction = false;
+	resume_audio();
 }

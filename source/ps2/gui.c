@@ -2481,7 +2481,9 @@ u32 ReGBA_Menu(enum ReGBA_MenuEntryReason EntryReason)
 	
 	SetGameResolution();
 
-	clear_screens(); 
+	clear_screens();
+
+	resume_audio();
 
 	StatsStopFPS();
 	timespec Now;
