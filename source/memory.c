@@ -304,7 +304,7 @@ static void waitstate_control(u32 value);
 static char *skip_spaces(char *line_ptr);
 static s32 parse_config_line(char *current_line, char *current_variable, char *current_value);
 static s32 load_game_config(char *gamepak_title, char *gamepak_code, char *gamepak_maker);
-static bool lookup_game_config(char *gamepak_title, char *gamepak_code, char *gamepak_maker, FILE_TAG_TYPE config_file);
+static bool lookup_game_config(char *gamepak_title, char *gamepak_code, char *gamepak_maker, const char *text);
 
 static void init_memory_gamepak(void);
 
@@ -3155,11 +3155,79 @@ static s32 parse_config_line(char *current_line, char *current_variable, char *c
   return 0;
 }
 
+/* One fileXio/fio read. The old FILE_GETS path issued an RPC per byte. */
+static char *slurp_game_config(const char *path)
+{
+	FILE_TAG_TYPE fd;
+	size_t len, got;
+	char *buf;
+	char *ptr;
+	int n;
+
+	FILE_OPEN(fd, path, READ);
+	if (!FILE_CHECK_VALID(fd))
+		return NULL;
+
+	len = FILE_LENGTH(fd);
+	if (len == 0 || len > (1024 * 1024))
+	{
+		FILE_CLOSE(fd);
+		return NULL;
+	}
+
+	buf = (char *)malloc(len + 1);
+	if (buf == NULL)
+	{
+		FILE_CLOSE(fd);
+		return NULL;
+	}
+
+	got = 0;
+	ptr = buf;
+	while (got < len)
+	{
+		n = FILE_READ(fd, ptr, len - got);
+		if (n <= 0)
+			break;
+		got += (size_t)n;
+		ptr += n;
+	}
+	FILE_CLOSE(fd);
+	buf[got] = 0;
+	if (got == 0)
+	{
+		free(buf);
+		return NULL;
+	}
+	return buf;
+}
+
+static int config_next_line(const char **pp, char *out, int out_size)
+{
+	const char *p = *pp;
+	int i = 0;
+
+	if (p == NULL || *p == 0)
+		return 0;
+
+	while (*p && *p != '\n' && *p != '\r' && i < out_size - 1)
+		out[i++] = *p++;
+	out[i] = 0;
+	if (*p == '\r')
+		p++;
+	if (*p == '\n')
+		p++;
+	*pp = p;
+	return 1;
+}
+
 static s32 load_game_config(char *gamepak_title, char *gamepak_code, char *gamepak_maker)
 {
 	char config_path[MAX_PATH];
-	FILE_TAG_TYPE config_file;
+	char scanned_path[MAX_PATH];
+	char *text;
 	u32 i;
+	int scanned = 0;
 
 	idle_loop_targets = 0;
 	for (i = 0; i < MAX_IDLE_LOOPS; i++)
@@ -3175,34 +3243,41 @@ static s32 load_game_config(char *gamepak_title, char *gamepak_code, char *gamep
 
 	ReGBA_ProgressInitialise(FILE_ACTION_APPLY_GAME_COMPATIBILITY);
 
+	scanned_path[0] = 0;
 	sprintf(config_path, "%s/%s", main_path, CONFIG_FILENAME);
 
-	FILE_OPEN(config_file, config_path, READ);
-
-	if(FILE_CHECK_VALID(config_file))
+	text = slurp_game_config(config_path);
+	if (text != NULL)
 	{
-		if (lookup_game_config(gamepak_title, gamepak_code, gamepak_maker, config_file))
+		scanned = 1;
+		strcpy(scanned_path, config_path);
+		if (lookup_game_config(gamepak_title, gamepak_code, gamepak_maker, text))
 		{
+			free(text);
 			ReGBA_ProgressUpdate(2, 2);
 			ReGBA_ProgressFinalise();
 			return 0;
 		}
-		else
-			ReGBA_ProgressUpdate(1, 2);
+		free(text);
+		ReGBA_ProgressUpdate(1, 2);
 	}
 
-	if (ReGBA_GetBundledGameConfig(config_path))
+	/* OpenDingux keeps a second copy next to the binary. On PS2 this path
+	 * is the same file — do not walk it again. */
+	if (ReGBA_GetBundledGameConfig(config_path) &&
+	    (!scanned || strcasecmp(config_path, scanned_path) != 0))
 	{
-		FILE_OPEN(config_file, config_path, READ);
-
-		if(FILE_CHECK_VALID(config_file))
+		text = slurp_game_config(config_path);
+		if (text != NULL)
 		{
-			if (lookup_game_config(gamepak_title, gamepak_code, gamepak_maker, config_file))
+			if (lookup_game_config(gamepak_title, gamepak_code, gamepak_maker, text))
 			{
+				free(text);
 				ReGBA_ProgressUpdate(2, 2);
 				ReGBA_ProgressFinalise();
 				return 0;
 			}
+			free(text);
 		}
 	}
 
@@ -3212,74 +3287,72 @@ static s32 load_game_config(char *gamepak_title, char *gamepak_code, char *gamep
 	return -1;
 }
 
-static bool lookup_game_config(char *gamepak_title, char *gamepak_code, char *gamepak_maker, FILE_TAG_TYPE config_file)
+static bool lookup_game_config(char *gamepak_title, char *gamepak_code, char *gamepak_maker, const char *text)
 {
 	char current_line[256];
 	char current_variable[256];
 	char current_value[256];
+	const char *p = text;
 
-	while(FILE_GETS(current_line, 256, config_file))
+	while (config_next_line(&p, current_line, 256))
 	{
-		if(parse_config_line(current_line, current_variable, current_value) != -1)
+		if (parse_config_line(current_line, current_variable, current_value) == -1)
+			continue;
+
+		if (strcasecmp(current_variable, "game_name") != 0 || strcasecmp(current_value, gamepak_title) != 0)
+			continue;
+
+		if (!config_next_line(&p, current_line, 256) ||
+		    parse_config_line(current_line, current_variable, current_value) == -1 ||
+		    strcasecmp(current_variable, "game_code") != 0 ||
+		    strcasecmp(current_value, gamepak_code) != 0)
+			continue;
+
+		if (!config_next_line(&p, current_line, 256) ||
+		    parse_config_line(current_line, current_variable, current_value) == -1 ||
+		    strcasecmp(current_variable, "vender_code") != 0 ||
+		    strcasecmp(current_value, gamepak_maker) != 0)
+			continue;
+
+		while (config_next_line(&p, current_line, 256))
 		{
-			if(strcasecmp(current_variable, "game_name") != 0 || strcasecmp(current_value, gamepak_title) != 0)
+			if (parse_config_line(current_line, current_variable, current_value) == -1)
 				continue;
 
-			if(!FILE_GETS(current_line, 256, config_file) || (parse_config_line(current_line, current_variable, current_value) == -1) ||
-			   strcasecmp(current_variable, "game_code") != 0 || strcasecmp(current_value, gamepak_code) != 0)
-				continue;
+			if (!strcasecmp(current_variable, "game_name"))
+				return true;
 
-			if(!FILE_GETS(current_line, 256, config_file) || (parse_config_line(current_line, current_variable, current_value) == -1) ||
-			   strcasecmp(current_variable, "vender_code") != 0 || strcasecmp(current_value, gamepak_maker) != 0)
-				continue;
-
-			while(FILE_GETS(current_line, 256, config_file))
+			if (!strcasecmp(current_variable, "idle_loop_eliminate_target"))
 			{
-				if(parse_config_line(current_line, current_variable, current_value) != -1)
+				if (idle_loop_targets < MAX_IDLE_LOOPS)
 				{
-					if(!strcasecmp(current_variable, "game_name"))
-					{
-						FILE_CLOSE(config_file);
-						return 0;
-					}
+					idle_loop_target_pc[idle_loop_targets] =
+						strtol(current_value, NULL, 16);
+					idle_loop_targets++;
+				}
+			}
 
-					if(!strcasecmp(current_variable, "idle_loop_eliminate_target"))
-					{
-						if(idle_loop_targets < MAX_IDLE_LOOPS)
-						{
-							idle_loop_target_pc[idle_loop_targets] =
-							strtol(current_value, NULL, 16);
-							idle_loop_targets++;
-						}
-					}
+			if (!strcasecmp(current_variable, "iwram_stack_optimize") && !strcasecmp(current_value, "no"))
+				iwram_stack_optimize = 0;
 
-					if(!strcasecmp(current_variable, "iwram_stack_optimize") && !strcasecmp(current_value, "no"))
-					{
-						iwram_stack_optimize = 0;
-					}
+			if (!strcasecmp(current_variable, "bios_rom_hack_39") &&
+			    !strcasecmp(current_value, "yes") &&
+			    IsNintendoBIOS)
+			{
+				bios.rom[0x39] = 0xC0;
+			}
 
-					if(!strcasecmp(current_variable, "bios_rom_hack_39") &&
-					   !strcasecmp(current_value, "yes") &&
-					   IsNintendoBIOS)
-					{
-						bios.rom[0x39] = 0xC0;
-					}
-
-					if(!strcasecmp(current_variable, "bios_rom_hack_2C") &&
-					   !strcasecmp(current_value, "yes") &&
-					   IsNintendoBIOS)
-					{
-						bios.rom[0x2C] = 0x02;
-					}
+			if (!strcasecmp(current_variable, "bios_rom_hack_2C") &&
+			    !strcasecmp(current_value, "yes") &&
+			    IsNintendoBIOS)
+			{
+				bios.rom[0x2C] = 0x02;
 			}
 		}
 
-		FILE_CLOSE(config_file);
 		return true;
-		}
 	}
 
-	FILE_CLOSE(config_file);
 	return false;
 }
 
