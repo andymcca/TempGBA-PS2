@@ -108,7 +108,7 @@ Dual renderer / OAM hijack, sleep/resume, GBK/CJK, XMB/EBOOT, boxart, carousel, 
 - Hardware ELF and PCSX2 HOST ELF stay separate. `make clean` between `make` and `make pcsx2`.
 - Build via MSYS 2018 toolchain (`source/ps2/build-msys.sh`), not host `psp-gcc` / Docker.
 - HOST ELF: `source/ps2/TempGBA-pcsx2.elf` (PSP ports reverted; confirmed working).
-- Hardware ELF: `source/ps2/TempGBA.elf`. Audio worker disabled — play from the EE main thread (original TempGBA-PS2). Vendored-audsrv worker crashed on first audio; reverted. HOST never starts a worker.
+- Hardware ELF: `source/ps2/TempGBA.elf`. Main-thread play; honor `play_audio` return (v5). `make WATCHDOG=1` → `TempGBA57.elf` (v5+v7). Option branches: `audio-v2-field-clock`, `audio-v3-backpressure`, `audio-v7-watchdog`. HOST never starts a worker.
 - **Hang after “Loading per-game settings”:** leftover progress; first `execute` never returns.
 - **All PSP-alignment ports reverted (2026-09-22):** sound masks, ADCS/SBCS/RSCS, IWRAM STM, OAM/affine, Thumb PC-pool, SWI pin, Div HLE. Working tree now matches `_TempGBA-PS2-git` source (pre-port).
 - Smoke-test: load-game, audio, a BIOS-heavy title, and a blended-sprite title.

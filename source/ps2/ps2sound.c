@@ -14,6 +14,10 @@ volatile unsigned int AudioFastForwarded;
 #define AUDIO_DAC_FRAMES      738
 #define AUDIO_DAC_BYTES       (AUDIO_DAC_FRAMES * 2 * (int)sizeof(s16))
 #define AUDIO_CHUNK_BYTES     (AUDIO_OUTPUT_BUFFER_SIZE * 2 * (int)sizeof(s16))
+#ifdef AUDIO_WATCHDOG
+/* Same Count scale as the earlier HOST spin (~147.456 MHz). ~0.25 s. */
+#define AUDIO_COUNTS_STALL    36864000u
+#endif
 
 #ifdef SOUND_TO_FILE
 FILE* WaveFile;
@@ -30,6 +34,17 @@ static s32 audio_thread_id = -1;
 static volatile int audio_running = 0;
 static volatile int audio_paused = 1;
 static volatile int audio_pause_count = 0;
+static int audio_holdoff;
+#ifdef AUDIO_WATCHDOG
+static u32 audio_last_count;
+
+static inline u32 ee_count(void)
+{
+	u32 c;
+	__asm__ volatile("mfc0 %0, $9" : "=r"(c));
+	return c;
+}
+#endif
 
 static inline void RenderSample(int16_t* Left, int16_t* Right)
 {
@@ -138,34 +153,6 @@ static int feed_buffer(unsigned char *buffer, int len)
 	return 1;
 }
 
-static void audio_thread(void *arg)
-{
-	(void)arg;
-
-	while (audio_running)
-	{
-		if (audio_paused)
-		{
-			SleepThread();
-			continue;
-		}
-
-		/* No wait_audio: that RPC starved boot when this thread was
-		 * higher priority than main. No stale replay: that is the
-		 * held note. Sleep on underrun; main wakes us next frame. */
-		if (!feed_buffer(ps2_sound_buffer, AUDIO_DAC_BYTES))
-		{
-			SleepThread();
-			continue;
-		}
-
-		if (!audio_paused && audio_running)
-			audsrv_play_audio((char *)ps2_sound_buffer, AUDIO_DAC_BYTES);
-	}
-
-	SleepThread();
-}
-
 static void wakeup_audio_thread(void)
 {
 	if (audio_thread_id >= 0)
@@ -197,20 +184,17 @@ void init_audio()
 	audsrv_set_volume(MAX_VOLUME);
 	memset(ps2_silence, 0, sizeof(ps2_silence));
 
-	audio_running = 1;
+	audio_running = 0;
 	audio_paused = 0;
 	audio_pause_count = 0;
-
-	/* No worker. A low-priority one starved and audsrv looped the last
-	 * chunk (same note for seconds). A high-priority wait_audio worker
-	 * hung boot. Submit one display field per vblank on this thread. */
 	audio_thread_id = -1;
-	audio_running = 0;
 	ps2_audio_resync();
 #ifdef HOST
 	printf("HOST audio: one display field per enqueue (no worker)\n");
+#elif defined(AUDIO_WATCHDOG)
+	printf("Hardware audio: honor play_audio return + stall watchdog\n");
 #else
-	printf("Hardware audio: field-clocked main-thread play (no worker)\n");
+	printf("Hardware audio: honor play_audio return (no worker)\n");
 #endif
 }
 
@@ -288,6 +272,10 @@ static void host_audio_pump(void)
 #else
 void ps2_audio_resync(void)
 {
+	audio_holdoff = 0;
+#ifdef AUDIO_WATCHDOG
+	audio_last_count = 0;
+#endif
 }
 
 void ps2_audio_begin_frame(void)
@@ -307,8 +295,28 @@ signed int ReGBA_AudioUpdate()
 #ifdef HOST
 	host_audio_pump();
 #else
+#ifdef AUDIO_WATCHDOG
+	{
+		u32 now = ee_count();
+		if (audio_last_count != 0 && (u32)(now - audio_last_count) > AUDIO_COUNTS_STALL)
+			audsrv_stop_audio();
+	}
+#endif
+	if (audio_holdoff > 0)
+	{
+		audio_holdoff--;
+		return 0;
+	}
+
 	if (feed_buffer(ps2_sound_buffer, AUDIO_DAC_BYTES))
-		audsrv_play_audio((char*)ps2_sound_buffer, AUDIO_DAC_BYTES);
+	{
+		int sent = audsrv_play_audio((char *)ps2_sound_buffer, AUDIO_DAC_BYTES);
+		if (sent >= 0 && sent < AUDIO_DAC_BYTES)
+			audio_holdoff = 2;
+#ifdef AUDIO_WATCHDOG
+		audio_last_count = ee_count();
+#endif
+	}
 #endif
 
 	return 0;

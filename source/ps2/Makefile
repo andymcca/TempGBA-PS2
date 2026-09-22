@@ -7,6 +7,12 @@ EE_BIN = TempGBA-pcsx2.elf
 EE_CFLAGS += -DHOST
 endif
 
+# WATCHDOG=1 adds the v7 stall cut on top of honor-play_audio (TempGBA57.elf).
+ifeq ($(WATCHDOG),1)
+EE_BIN = TempGBA57.elf
+EE_CFLAGS += -DAUDIO_WATCHDOG
+endif
+
 EE_CFLAGS += -g -DzHOST -DMIPS_XBURST -DLOAD_ALL_ROM -DCHEATS -DGIT_VERSION=$(shell git describe --always)
 EE_INCS += -I./ -I$(PS2SDK)/ports/include -I$(PS2DEV)/gskit/include -I../ -I../mips
 EE_LDFLAGS += -L$(PS2SDK)/ports/lib -L$(PS2DEV)/gskit/lib

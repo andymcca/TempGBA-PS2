@@ -26,6 +26,10 @@ elif [ "$1" = "hardware" ]; then
   make clean
   make -j1
   ls -l TempGBA.elf
+elif [ "$1" = "hardware57" ]; then
+  rm -f ps2sound.o TempGBA57.elf
+  make -j1 WATCHDOG=1
+  ls -l TempGBA57.elf
 else
   make -j1
   ls -l TempGBA.elf
