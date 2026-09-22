@@ -1076,51 +1076,90 @@ int ps2GetMainPath(char *path, char *argv)
 	return check_dir(path, 1);
 }
 
+#define PS2FGETS_BUF 8192
+
+static FILE_TAG_TYPE ps2fgets_fd = -1;
+static unsigned char ps2fgets_buf[PS2FGETS_BUF];
+static int ps2fgets_len = 0;
+static int ps2fgets_pos = 0;
+
+void ps2fgets_invalidate(FILE_TAG_TYPE stream)
+{
+	if (ps2fgets_fd == stream)
+	{
+		ps2fgets_fd = -1;
+		ps2fgets_len = 0;
+		ps2fgets_pos = 0;
+	}
+}
+
+static int ps2fgets_getc(FILE_TAG_TYPE stream)
+{
+	int n;
+
+	if (ps2fgets_fd != stream)
+	{
+		ps2fgets_fd = stream;
+		ps2fgets_len = 0;
+		ps2fgets_pos = 0;
+	}
+
+	if (ps2fgets_pos >= ps2fgets_len)
+	{
+		n = FILE_READ(stream, ps2fgets_buf, PS2FGETS_BUF);
+		if (n <= 0)
+		{
+			ps2fgets_len = 0;
+			ps2fgets_pos = 0;
+			return -1;
+		}
+		ps2fgets_len = n;
+		ps2fgets_pos = 0;
+	}
+
+	return ps2fgets_buf[ps2fgets_pos++];
+}
+
 char *ps2fgets(char *str, int size, FILE_TAG_TYPE stream)
 {
-	char c;
-	int i;
+	int i, c;
 
-	if(str == NULL || stream < 0)
-	return NULL;
-	
-	for(i = 0; i < size - 1; i++)
+	if (str == NULL || stream < 0 || size < 2)
+		return NULL;
+
+	for (i = 0; i < size - 1; i++)
 	{
-		if(FILE_READ(stream, &c, 1))
+		c = ps2fgets_getc(stream);
+		if (c < 0)
 		{
-			if(c == '\r')
-			{
-				FILE_READ(stream, &c, 1);
-				
-				if(c == '\n')
-				{
-					*(str + i) = '\r';
-					*(str + i + 1) = '\n';
-					*(str + i + 2) = '\0';
-					return str;
-				}
-			}
-			
-			if(c == '\n')
-			{
-				*(str + i) = '\n';
-				*(str + i + 1) = '\0';
-				return str;
-			}
-			
-			if(c == '\0')
-			{
-				*(str + i) = '\0';
-				return str;
-			}
-			
-			*(str + i) = c;
+			if (i == 0)
+				return NULL;
+			str[i] = 0;
+			return str;
 		}
-		else
-		return NULL;	
+
+		if (c == '\r')
+		{
+			int n = ps2fgets_getc(stream);
+			if (n != '\n' && n >= 0 && ps2fgets_pos > 0)
+				ps2fgets_pos--;
+			str[i] = '\n';
+			str[i + 1] = 0;
+			return str;
+		}
+
+		if (c == '\n' || c == 0)
+		{
+			str[i] = (c == 0) ? 0 : '\n';
+			str[i + 1] = 0;
+			return str;
+		}
+
+		str[i] = (char)c;
 	}
-	
-	return NULL;
+
+	str[size - 1] = 0;
+	return str;
 }
 
 int clock_gettime(struct timespec *ts)

@@ -54,5 +54,6 @@ int ps2DebugScreenInit();
 int ps2GetMainPath(char *path, char *argv);
 void ps2HostMainPath(char *path, const char *argv0);
 char *ps2fgets(char *str, int size, FILE_TAG_TYPE stream);
+void ps2fgets_invalidate(FILE_TAG_TYPE stream);
 int clock_gettime(struct timespec *ts);
 

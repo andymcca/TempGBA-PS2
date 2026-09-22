@@ -76,7 +76,7 @@ struct timespec {
   (filename_tag > 0)                                        				\
 
 #define FILE_CLOSE(filename_tag)                                            \
-  fioClose(filename_tag)                                                    \
+  (ps2fgets_invalidate(filename_tag), fioClose(filename_tag))               \
 
 #define FILE_DELETE(filename)                                               \
   fioRemove(filename) && fioRmdir(filename)                                 \
@@ -88,7 +88,7 @@ struct timespec {
   fioWrite(filename_tag, buffer, size)                                      \
 
 #define FILE_SEEK(filename_tag, offset, type)                               \
-  fioLseek(filename_tag, offset, type)                                      \
+  (ps2fgets_invalidate(filename_tag), fioLseek(filename_tag, offset, type)) \
 
 #else
 
@@ -99,7 +99,7 @@ struct timespec {
   (filename_tag > 0)                                        				\
 
 #define FILE_CLOSE(filename_tag)                                            \
-  fileXioClose(filename_tag)                                                \
+  (ps2fgets_invalidate(filename_tag), fileXioClose(filename_tag))           \
 
 #define FILE_DELETE(filename)                                               \
   fileXioRemove(filename)                                                   \
@@ -111,7 +111,7 @@ struct timespec {
   fileXioWrite(filename_tag, buffer, size)                                  \
 
 #define FILE_SEEK(filename_tag, offset, type)                               \
-  fileXioLseek(filename_tag, offset, type)                                  \
+  (ps2fgets_invalidate(filename_tag), fileXioLseek(filename_tag, offset, type)) \
 
 #endif
 
