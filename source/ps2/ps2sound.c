@@ -18,8 +18,6 @@ volatile unsigned int AudioFastForwarded;
 #define AUDIO_DAC_FRAMES      738
 #define AUDIO_DAC_BYTES       (AUDIO_DAC_FRAMES * 2 * (int)sizeof(s16))
 #define AUDIO_CHUNK_BYTES     (AUDIO_OUTPUT_BUFFER_SIZE * 2 * (int)sizeof(s16))
-#define GBA_RATE_NUM          597275u
-#define GBA_RATE_DEN          10000u
 
 #ifdef SOUND_TO_FILE
 FILE* WaveFile;
@@ -217,7 +215,7 @@ void init_audio()
 	 * down to ~2 fps. Play from ReGBA_AudioUpdate on the EE main thread. */
 	audio_thread_id = -1;
 	ps2_audio_resync();
-	printf("HOST audio: one GBA frame per emulated frame\n");
+	printf("HOST audio: one display field per enqueue (no worker)\n");
 	return;
 #endif
 
@@ -250,103 +248,75 @@ void init_audio()
 }
 
 #ifdef HOST
-/* 2018 audsrv has no available/queued. Submit exactly one GBA frame of
- * samples per emulated frame (same 59.7275 clock as video). A variable
- * "catch up to the display" dump made pitch walk; leading silence before
- * the first real buffer made the stream start late vs graphics. */
+/* 2018 audsrv has no available/queued. Submit at the display field rate
+ * (44100 / field_hz samples per vblank). That is realtime on PAL and NTSC.
+ * Tying enqueue to GBA frames and blocking until 59.73 chunks/sec on a
+ * 50 Hz display starved the ring; the quota then discarded the backlog
+ * and the stream went silent for long stretches. */
 static unsigned int host_audio_v0;
 static u32 host_audio_played;
-static u32 host_gba_frac;
-static int host_pending_frames;
-static int host_stream_started;
+static unsigned int host_audio_last_field;
+static int host_audio_ready;
 
 void ps2_audio_resync(void)
 {
-	host_audio_played = 0;
-	host_gba_frac = 0;
-	host_pending_frames = 0;
-	host_stream_started = 0;
+	host_audio_ready = 0;
 }
 
 void ps2_audio_begin_frame(void)
 {
-	if (host_pending_frames < 8)
-		host_pending_frames++;
-}
-
-static u32 host_samples_for_gba_frame(void)
-{
-	host_gba_frac += (u32)OUTPUT_SOUND_FREQUENCY * GBA_RATE_DEN;
-	{
-		u32 n = host_gba_frac / GBA_RATE_NUM;
-		host_gba_frac -= n * GBA_RATE_NUM;
-		return n;
-	}
 }
 
 static void host_audio_pump(void)
 {
+	u32 field_num, field_den, allowed, want, bytes;
+	unsigned int elapsed;
+	char *out;
+
 	if (audio_paused)
 		return;
 
-	while (host_pending_frames > 0)
+	if (!host_audio_ready)
 	{
-		u32 field_num, field_den, allowed, n, bytes;
-		unsigned int elapsed;
-		char *out;
-
-		{
-			u32 saved_frac = host_gba_frac;
-
-			n = host_samples_for_gba_frame();
-			if (n < 32u || n > (u32)AUDIO_OUTPUT_BUFFER_SIZE)
-			{
-				host_gba_frac = saved_frac;
-				host_pending_frames--;
-				continue;
-			}
-
-			if (host_stream_started)
-			{
-				ps2_display_field_rate(&field_num, &field_den);
-				elapsed = vblank_ticks - host_audio_v0;
-				allowed = (u32)(((u64)elapsed * (u64)OUTPUT_SOUND_FREQUENCY * (u64)field_den)
-					/ (u64)field_num);
-				/* Already one frame ahead of the display clock — retry after
-				 * pace waits, do not dump a second frame this field. */
-				if (host_audio_played >= allowed + n)
-				{
-					host_gba_frac = saved_frac;
-					return;
-				}
-			}
-
-			bytes = n * 2u * (u32)sizeof(s16);
-			out = (char *)ps2_sound_buffer;
-			if (!feed_buffer(ps2_sound_buffer, (int)bytes))
-			{
-				/* Do not enqueue silence before the first real buffer: that
-				 * spends DAC time on nothing and leaves game audio late. */
-				if (!host_stream_started)
-				{
-					host_gba_frac = saved_frac;
-					return;
-				}
-				out = (char *)ps2_silence;
-			}
-		}
-
-		if (!host_stream_started)
-		{
-			host_audio_v0 = vblank_ticks;
-			host_audio_played = 0;
-			host_stream_started = 1;
-		}
-
-		audsrv_play_audio(out, (int)bytes);
-		host_audio_played += n;
-		host_pending_frames--;
+		host_audio_v0 = vblank_ticks;
+		host_audio_played = 0;
+		host_audio_last_field = (unsigned int)(vblank_ticks - 1);
+		host_audio_ready = 1;
 	}
+
+	if (vblank_ticks == host_audio_last_field)
+		return;
+	host_audio_last_field = vblank_ticks;
+
+	ps2_display_field_rate(&field_num, &field_den);
+	elapsed = vblank_ticks - host_audio_v0;
+	allowed = (u32)(((u64)elapsed * (u64)OUTPUT_SOUND_FREQUENCY * (u64)field_den)
+		/ (u64)field_num);
+
+	if (host_audio_played + 32u > allowed)
+		return;
+
+	want = allowed - host_audio_played;
+	/* One field only — do not dump a backlog in one go (that walks pitch). */
+	{
+		u32 field_frames = (u32)(((u64)OUTPUT_SOUND_FREQUENCY * (u64)field_den)
+			/ (u64)field_num) + 1u;
+		if (want > field_frames)
+			want = field_frames;
+	}
+	if (want > (u32)AUDIO_OUTPUT_BUFFER_SIZE)
+		want = (u32)AUDIO_OUTPUT_BUFFER_SIZE;
+	want &= ~1u;
+	if (want < 32u)
+		return;
+
+	bytes = want * 2u * (u32)sizeof(s16);
+	out = (char *)ps2_sound_buffer;
+	if (!feed_buffer(ps2_sound_buffer, (int)bytes))
+		out = (char *)ps2_silence;
+
+	audsrv_play_audio(out, (int)bytes);
+	host_audio_played += want;
 }
 #else
 void ps2_audio_resync(void)
