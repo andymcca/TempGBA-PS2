@@ -1275,8 +1275,11 @@ static void ActionLoadGame(struct Menu** ActiveMenu, uint32_t* ActiveMenuEntryIn
 #endif
 				ReGBA_LoadSettings(FileNameNoExt, true);
 			}
-       	
-       	    init_cpu(ResolveSetting(BootFromBIOS, PerGameBootFromBIOS));
+
+			/* load_gamepak() already reset_gba() and set CHANGED_PC.
+			 * Calling init_cpu() again cleared CHANGED_PC_STATUS, so the
+			 * dynarec kept running the previous game (white screen / BIOS). */
+			reg[CHANGED_PC_STATUS] = 1;
 	   
 	   		*ActiveMenu = NULL;
 	   		main_ret = 0;
