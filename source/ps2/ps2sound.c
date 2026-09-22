@@ -14,10 +14,8 @@ volatile unsigned int AudioFastForwarded;
 #define AUDIO_DAC_FRAMES      738
 #define AUDIO_DAC_BYTES       (AUDIO_DAC_FRAMES * 2 * (int)sizeof(s16))
 #define AUDIO_CHUNK_BYTES     (AUDIO_OUTPUT_BUFFER_SIZE * 2 * (int)sizeof(s16))
-#ifdef AUDIO_WATCHDOG
 /* Same Count scale as the earlier HOST spin (~147.456 MHz). ~0.25 s. */
 #define AUDIO_COUNTS_STALL    36864000u
-#endif
 
 #ifdef SOUND_TO_FILE
 FILE* WaveFile;
@@ -34,8 +32,6 @@ static s32 audio_thread_id = -1;
 static volatile int audio_running = 0;
 static volatile int audio_paused = 1;
 static volatile int audio_pause_count = 0;
-static int audio_holdoff;
-#ifdef AUDIO_WATCHDOG
 static u32 audio_last_count;
 
 static inline u32 ee_count(void)
@@ -44,7 +40,6 @@ static inline u32 ee_count(void)
 	__asm__ volatile("mfc0 %0, $9" : "=r"(c));
 	return c;
 }
-#endif
 
 static inline void RenderSample(int16_t* Left, int16_t* Right)
 {
@@ -191,10 +186,8 @@ void init_audio()
 	ps2_audio_resync();
 #ifdef HOST
 	printf("HOST audio: one display field per enqueue (no worker)\n");
-#elif defined(AUDIO_WATCHDOG)
-	printf("Hardware audio: honor play_audio return + stall watchdog\n");
 #else
-	printf("Hardware audio: honor play_audio return (no worker)\n");
+	printf("Hardware audio: stall watchdog (no worker)\n");
 #endif
 }
 
@@ -272,10 +265,7 @@ static void host_audio_pump(void)
 #else
 void ps2_audio_resync(void)
 {
-	audio_holdoff = 0;
-#ifdef AUDIO_WATCHDOG
 	audio_last_count = 0;
-#endif
 }
 
 void ps2_audio_begin_frame(void)
@@ -295,27 +285,15 @@ signed int ReGBA_AudioUpdate()
 #ifdef HOST
 	host_audio_pump();
 #else
-#ifdef AUDIO_WATCHDOG
 	{
 		u32 now = ee_count();
 		if (audio_last_count != 0 && (u32)(now - audio_last_count) > AUDIO_COUNTS_STALL)
 			audsrv_stop_audio();
 	}
-#endif
-	if (audio_holdoff > 0)
-	{
-		audio_holdoff--;
-		return 0;
-	}
-
 	if (feed_buffer(ps2_sound_buffer, AUDIO_DAC_BYTES))
 	{
-		int sent = audsrv_play_audio((char *)ps2_sound_buffer, AUDIO_DAC_BYTES);
-		if (sent >= 0 && sent < AUDIO_DAC_BYTES)
-			audio_holdoff = 2;
-#ifdef AUDIO_WATCHDOG
+		audsrv_play_audio((char *)ps2_sound_buffer, AUDIO_DAC_BYTES);
 		audio_last_count = ee_count();
-#endif
 	}
 #endif
 
