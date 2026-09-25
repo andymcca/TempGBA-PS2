@@ -29,7 +29,7 @@ typedef struct PS2DIR
 int Setup_Pad(void);
 void Wait_Pad_Ready(void);
 void WaitPadReady(int port, int slot);
-int ps2init();
+int ps2init(const char *argv0);
 void ps2delay(int count);
 int ps2quit();
 
