@@ -72,20 +72,22 @@ PSP: `737ef19`, `5aadbd9`. Pin was already ruled out; Div HLE was in the “stil
 
 ---
 
+## Done this batch
+
+### `expand_blend_mips` (old renderer alpha)
+
+PSP `source/src/video_blend_mips.S` (`4d1aa19`) Allegrex loop ported to EE as `source/video_blend_mips.S`:
+
+- `ins` dilation → `sll`/`or`/`and` (`(c|(c<<16)) & 0x03E07C1F`)
+- Allegrex 2-op `maddu` → two `multu` + `addu` (LO-only; weights fit)
+- `video.c`: `expand_blend` → asm; `expand_blend_c` kept; `#define USE_EXPAND_BLEND_MIPS 0` forces C
+- `ps2/Makefile`: `../video_blend_mips.o` in `COMMON_OBJS`
+
+Validate on hardware/PCSX2 with alpha-blended OBJ titles (saturate and non-saturate BLDALPHA).
+
+---
+
 ## Still to do
-
-### Last: `expand_blend_mips` (old renderer alpha)
-
-User: worthwhile, leave until last.
-
-PSP `source/src/video_blend_mips.S` (`4d1aa19`) is an Allegrex inner loop (`ins` / `maddu`) for the **old** `expand_blend` path that PS2 already has in C (`source/video.c`). PS2 does not have the dual/`video.cc` renderer.
-
-Need an EE rewrite:
-
-- no Allegrex `ins` for 0G0R0B dilation (use shift/mask)
-- EE has `multu`/`madd`; confirm 2018 `ee-gcc` / `ee-as` emit what we write
-- keep C `expand_blend` as fallback until the asm matches saturate vs non-saturate
-- hook from `video.c` the same way PSP wraps `expand_blend` → `expand_blend_mips`
 
 ### Later extras (not in this batch)
 

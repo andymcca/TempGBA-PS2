@@ -22,7 +22,8 @@ EE_LIBS += -lgskit -ldmakit -laudsrv -lpad -lz -lps2time -lcdvd \
 EE_CFLAGS += -Wno-unused-variable
 
 COMMON_OBJS = ../cpu.o ../input.o ../memory.o ../sound.o \
-			  ../stats.o ../unifont.o ../video.o ../zip.o ../mips/stub.o
+			  ../stats.o ../unifont.o ../video.o ../video_blend_mips.o \
+			  ../zip.o ../mips/stub.o
 		   
 EE_OBJS = $(COMMON_OBJS) draw.o main.o ps2input.o ps2memory.o \
 		ps2sound.o port.o port-asm.o ps2.o gui.o settings.o cheats.o charsets.o \
