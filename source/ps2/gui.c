@@ -1900,6 +1900,15 @@ static struct MenuEntry DisplayMenu_Frameskip = {
 	.ChoiceCount = 5, .Choices = { { "Automatic", "auto" }, { "0 (~60 FPS)", "0" }, { "1 (~30 FPS)", "1" }, { "2 (~20 FPS)", "2" }, { "3 (~15 FPS)", "3" } }
 };
 
+static struct MenuEntry PerGameDisplayMenu_HblankIrq = {
+	ENTRY_OPTION("hblank_irq", "HBLANK IRQ", &PerGameHblankIrqMode),
+	.ChoiceCount = 4, .Choices = { { "No override", "" }, { "TEMPGBA", "tempgba" }, { "GPSP-KAI", "gpsp-kai" }, { "OFF", "off" } }
+};
+static struct MenuEntry DisplayMenu_HblankIrq = {
+	ENTRY_OPTION("hblank_irq", "HBLANK IRQ", &HblankIrqMode),
+	.ChoiceCount = 3, .Choices = { { "TEMPGBA", "tempgba" }, { "GPSP-KAI", "gpsp-kai" }, { "OFF", "off" } }
+};
+
 static struct MenuEntry PerGameDisplayMenu_FastForwardTarget = {
 	ENTRY_OPTION("fast_forward_target", "Fast-forward target", &PerGameFastForwardTarget),
 	.ChoiceCount = 6, .Choices = { { "No override", "" }, { "2x (~120 FPS)", "2" }, { "3x (~180 FPS)", "3" }, { "4x (~240 FPS)", "4" }, { "5x (~300 FPS)", "5" }, { "6x (~360 FPS)", "6" } }
@@ -1987,12 +1996,12 @@ static struct Menu PerGameDisplayMenu = {
 	.Parent = &PerGameMainMenu, .Title = "Display settings",
 	MENU_PER_GAME,
 	.AlternateVersion = &DisplayMenu,
-	.Entries = { &PerGameDisplayMenu_BootSource, &PerGameDisplayMenu_FPSCounter, &PerGameDisplayMenu_VideoMode, &PerGameDisplayMenu_ScreenRatio, &PerGameDisplayMenu_VideoFilter, &PerGameDisplayMenu_ScaleMode, &PerGameDisplayMenu_Frameskip, &PerGameDisplayMenu_FastForwardTarget, &PerGameDisplayMenu_MenuRes, &PerGameDisplayMenu_ScreenPos, NULL }
+	.Entries = { &PerGameDisplayMenu_BootSource, &PerGameDisplayMenu_FPSCounter, &PerGameDisplayMenu_VideoMode, &PerGameDisplayMenu_ScreenRatio, &PerGameDisplayMenu_VideoFilter, &PerGameDisplayMenu_ScaleMode, &PerGameDisplayMenu_Frameskip, &PerGameDisplayMenu_HblankIrq, &PerGameDisplayMenu_FastForwardTarget, &PerGameDisplayMenu_MenuRes, &PerGameDisplayMenu_ScreenPos, NULL }
 };
 static struct Menu DisplayMenu = {
 	.Parent = &MainMenu, .Title = "Display settings",
 	.AlternateVersion = &PerGameDisplayMenu,
-	.Entries = { &DisplayMenu_BootSource, &DisplayMenu_FPSCounter, &DisplayMenu_VideoMode, &DisplayMenu_ScreenRatio, &DisplayMenu_VideoFilter, &DisplayMenu_ScaleMode, &DisplayMenu_Frameskip, &DisplayMenu_FastForwardTarget, &DisplayMenu_MenuRes, &DisplayMenu_ScreenPos, NULL }
+	.Entries = { &DisplayMenu_BootSource, &DisplayMenu_FPSCounter, &DisplayMenu_VideoMode, &DisplayMenu_ScreenRatio, &DisplayMenu_VideoFilter, &DisplayMenu_ScaleMode, &DisplayMenu_Frameskip, &DisplayMenu_HblankIrq, &DisplayMenu_FastForwardTarget, &DisplayMenu_MenuRes, &DisplayMenu_ScreenPos, NULL }
 };
 
 // -- Input Settings --

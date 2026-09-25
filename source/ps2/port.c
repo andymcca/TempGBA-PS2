@@ -26,6 +26,8 @@ uint32_t PerGameShowFPS;
 uint32_t ShowFPS;
 uint32_t PerGameUserFrameskip;
 uint32_t UserFrameskip;
+uint32_t PerGameHblankIrqMode;
+uint32_t HblankIrqMode;
 
 void ReGBA_Trace(const char* Format, ...)
 {

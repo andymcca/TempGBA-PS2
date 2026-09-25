@@ -136,6 +136,14 @@ extern uint32_t PerGameShowFPS;
 extern uint32_t ShowFPS;
 extern uint32_t PerGameUserFrameskip;
 extern uint32_t UserFrameskip;
+extern uint32_t PerGameHblankIrqMode;
+extern uint32_t HblankIrqMode;
+
+enum {
+	HBLANK_IRQ_TEMPGBA = 0, /* no scanline window (current TempGBA behaviour) */
+	HBLANK_IRQ_GPSP_KAI = 1, /* scanlines 0-160 */
+	HBLANK_IRQ_OFF = 2 /* scanline 0 only */
+};
 
 extern struct timespec TimeDifference(struct timespec Past, struct timespec Present);
 extern void GetFileNameNoExtension(char* Result, const char* Path);

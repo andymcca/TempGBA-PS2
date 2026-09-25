@@ -399,7 +399,18 @@ u32 update_gba()
 				}
 
 				if(dispstat & 0x10)
-					irq_raised |= IRQ_HBLANK;
+				{
+					u32 hblank_mode = ResolveSetting(HblankIrqMode, PerGameHblankIrqMode);
+					u32 allow_hblank_irq = 1;
+
+					if (hblank_mode == HBLANK_IRQ_GPSP_KAI)
+						allow_hblank_irq = (vcount <= 160);
+					else if (hblank_mode == HBLANK_IRQ_OFF)
+						allow_hblank_irq = (vcount == 0);
+
+					if (allow_hblank_irq)
+						irq_raised |= IRQ_HBLANK;
+				}
 			}
 			else
 			{
