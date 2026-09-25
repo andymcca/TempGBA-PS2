@@ -67,18 +67,33 @@ static int is_pfs_dev(const char *s);
 static int resolve_pfs_dir(char *path, int is_main);
 static int parse_hdd0_pfs_argv(const char *argv, char *out);
 
+/* Slim BIOS has X* modules that register with iomanX. Fat consoles only have
+ * the non-X names; those still work if they are loaded *after* iomanX. */
+static int load_rom_module(const char *xname, const char *name)
+{
+	int ret = SifLoadModule(xname, 0, NULL);
+	if (ret < 0)
+		ret = SifLoadModule(name, 0, NULL);
+	return ret;
+}
+
 static void load_modules()
 {
-	SifLoadModule("rom0:SIO2MAN", 0, NULL);
-	SifLoadModule("rom0:MCMAN", 0, NULL);
-	SifLoadModule("rom0:MCSERV", 0, NULL);
-	SifLoadModule("rom0:PADMAN", 0, NULL);
-	
+	/* iomanX first so mc / mass / pfs all attach to the same manager.
+	 * Loading rom0:MCMAN before iomanX registers mc0: with stock ioman,
+	 * then iomanX replaces it and the card disappears. USB/HDD were fine
+	 * because those IRXes were already loaded after iomanX. */
 	SifExecModuleBuffer(iomanX_irx, size_iomanX_irx, 0, NULL, NULL);
 	SifExecModuleBuffer(fileXio_irx, size_fileXio_irx, 0, NULL, NULL);
+
+	load_rom_module("rom0:XSIO2MAN", "rom0:SIO2MAN");
+	load_rom_module("rom0:XMCMAN", "rom0:MCMAN");
+	load_rom_module("rom0:XMCSERV", "rom0:MCSERV");
+	load_rom_module("rom0:XPADMAN", "rom0:PADMAN");
+
 	SifExecModuleBuffer(smscdvd_irx, size_smscdvd_irx, 0, NULL, NULL);
 	SifExecModuleBuffer(usbd_irx, size_usbd_irx, 0, NULL, NULL);
-	SifExecModuleBuffer(usbhdfsd_irx, size_usbhdfsd_irx, 0, NULL, NULL);      
+	SifExecModuleBuffer(usbhdfsd_irx, size_usbhdfsd_irx, 0, NULL, NULL);
 	SifExecModuleBuffer(freesd_irx, size_freesd_irx, 0, NULL, NULL);
 	SifExecModuleBuffer(audsrv_irx, size_audsrv_irx, 0, NULL, NULL);
 }
@@ -345,7 +360,7 @@ int ps2Closedir(PS2DIR *d)
 	{
 		DPRINTF("ps2dclose %d \n", d->d_fd);
 		
-		if(d->d_fd > 0)
+		if(d->d_fd >= 0)
 			ret = ps2Dclose(d->d_fd);
 		
 		free(d->d_entry);
@@ -838,7 +853,7 @@ static int resolve_pfs_dir(char *path, int is_main)
 		else
 			sprintf(try_path, "pfs%d:/", m);
 		fd = ps2Dopen(try_path);
-		if (fd > 0)
+		if (fd >= 0)
 		{
 			ps2Dclose(fd);
 			strcpy(path, try_path);
@@ -923,7 +938,7 @@ int check_dir(char *path, int is_main)
 
 	DPRINTF("dopen %s fd %d\n", path, fd);
 
-	if(fd > 0)
+	if(fd >= 0)
 	{
 		//DPRINTF("close %s\n", path);
 		ps2Dclose(fd);
@@ -1076,8 +1091,13 @@ int ps2GetMainPath(char *path, char *argv)
 	}
 	else if(!strncmp(argv, "cdfs:", 5) || !strncmp(argv, "cdrom", 5))
 	{
+#ifdef HOST
 		mkdir("mc0:/PS2GBA");
 		mkdir("mc0:/PS2GBA/TEMPGBA");
+#else
+		fileXioMkdir("mc0:/PS2GBA", fileXio_mode);
+		fileXioMkdir("mc0:/PS2GBA/TEMPGBA", fileXio_mode);
+#endif
 		strcpy(path, "mc0:/PS2GBA/TEMPGBA");
 	}
 	else

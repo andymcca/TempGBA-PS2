@@ -73,7 +73,7 @@ struct timespec {
   filename_tag = fioOpen(filename, FILE_OPEN_##mode)                        \
 
 #define FILE_CHECK_VALID(filename_tag)                                      \
-  (filename_tag > 0)                                        				\
+  (filename_tag >= 0)                                       				\
 
 #define FILE_CLOSE(filename_tag)                                            \
   (ps2fgets_invalidate(filename_tag), fioClose(filename_tag))               \
@@ -96,7 +96,7 @@ struct timespec {
   filename_tag = fileXioOpen(filename, FILE_OPEN_##mode, fileXio_mode)      \
 
 #define FILE_CHECK_VALID(filename_tag)                                      \
-  (filename_tag > 0)                                        				\
+  (filename_tag >= 0)                                       				\
 
 #define FILE_CLOSE(filename_tag)                                            \
   (ps2fgets_invalidate(filename_tag), fileXioClose(filename_tag))           \
