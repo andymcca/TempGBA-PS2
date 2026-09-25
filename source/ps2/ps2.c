@@ -67,29 +67,30 @@ static int is_pfs_dev(const char *s);
 static int resolve_pfs_dir(char *path, int is_main);
 static int parse_hdd0_pfs_argv(const char *argv, char *out);
 
-/* Slim BIOS has X* modules that register with iomanX. Fat consoles only have
- * the non-X names; those still work if they are loaded *after* iomanX. */
-static int load_rom_module(const char *xname, const char *name)
-{
-	int ret = SifLoadModule(xname, 0, NULL);
-	if (ret < 0)
-		ret = SifLoadModule(name, 0, NULL);
-	return ret;
-}
-
 static void load_modules()
 {
-	/* iomanX first so mc / mass / pfs all attach to the same manager.
-	 * Loading rom0:MCMAN before iomanX registers mc0: with stock ioman,
-	 * then iomanX replaces it and the card disappears. USB/HDD were fine
-	 * because those IRXes were already loaded after iomanX. */
+#ifdef HOST
+	/* PCSX2: keep the old rom0-then-iomanX order. Probing XSIO2MAN after
+	 * an IOP reset can hang loadfile before init_video (black screen). */
+	SifLoadModule("rom0:SIO2MAN", 0, NULL);
+	SifLoadModule("rom0:MCMAN", 0, NULL);
+	SifLoadModule("rom0:MCSERV", 0, NULL);
+	SifLoadModule("rom0:PADMAN", 0, NULL);
+
+	SifExecModuleBuffer(iomanX_irx, size_iomanX_irx, 0, NULL, NULL);
+	SifExecModuleBuffer(fileXio_irx, size_fileXio_irx, 0, NULL, NULL);
+#else
+	/* Hardware: iomanX first so mc / mass / pfs all attach to it.
+	 * Then the stock rom0 modules (no X* probe — missing XSIO2MAN can
+	 * hang loadfile). MCMAN after iomanX is what makes mc0: visible. */
 	SifExecModuleBuffer(iomanX_irx, size_iomanX_irx, 0, NULL, NULL);
 	SifExecModuleBuffer(fileXio_irx, size_fileXio_irx, 0, NULL, NULL);
 
-	load_rom_module("rom0:XSIO2MAN", "rom0:SIO2MAN");
-	load_rom_module("rom0:XMCMAN", "rom0:MCMAN");
-	load_rom_module("rom0:XMCSERV", "rom0:MCSERV");
-	load_rom_module("rom0:XPADMAN", "rom0:PADMAN");
+	SifLoadModule("rom0:SIO2MAN", 0, NULL);
+	SifLoadModule("rom0:MCMAN", 0, NULL);
+	SifLoadModule("rom0:MCSERV", 0, NULL);
+	SifLoadModule("rom0:PADMAN", 0, NULL);
+#endif
 
 	SifExecModuleBuffer(smscdvd_irx, size_smscdvd_irx, 0, NULL, NULL);
 	SifExecModuleBuffer(usbd_irx, size_usbd_irx, 0, NULL, NULL);
