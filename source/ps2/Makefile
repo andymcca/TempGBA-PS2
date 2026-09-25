@@ -26,7 +26,7 @@ COMMON_OBJS = ../cpu.o ../input.o ../memory.o ../sound.o \
 			  ../zip.o ../mips/stub.o
 		   
 EE_OBJS = $(COMMON_OBJS) draw.o main.o ps2input.o ps2memory.o \
-		ps2sound.o port.o port-asm.o ps2.o gui.o settings.o cheats.o charsets.o \
+		ps2sound.o port.o port-asm.o ps2.o gui.o settings.o cheats.o \
 		scalers/2xSaI.o scalers/scale2x.o scalers/scale3x.o scalers/scaler.o \
 		iomanX_irx.o usbhdfsd_irx.o usbd_irx.o freesd_irx.o audsrv_irx.o \
 		poweroff_irx.o fileXio_irx.o ps2atad_irx.o ps2fs_irx.o ps2hdd_irx.o ps2dev9_irx.o \

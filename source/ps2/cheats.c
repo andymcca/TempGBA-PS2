@@ -27,7 +27,6 @@
  * ヘッダファイルの読込み
  ******************************************************************************/
 #include "common.h"
-#include "charsets.h"
 
 static char *DEFAULT_CHEAT_DIR;
 
@@ -119,71 +118,11 @@ static unsigned char* sscanf_cht_value(unsigned char* str, unsigned int *value)
 
 int string2utf8(unsigned char *src, unsigned char* dst)
 {
-	unsigned char *pt;
-	unsigned char ch;
-	unsigned short ucode;
-	unsigned int type;
-	unsigned int len;
-
-	len = 0;
-	type = 0;
-	pt = src;
-	while(*pt)
-	{
-		pt = utf8decode(pt, &ucode);
-		if(ucode < 0x4e00)
-		{
-			if(ucode == 0 || ucode > 0x7F)
-			{
-				type = 1;
-				break;
-			}
-		}
-		else if(ucode > 0x9FCF)
-		{
-			type = 1;
-			break;
-		}
-		else
-			len++;
-
-		if(len >= 5) break;	//There is enough UTF8, so it is, to save time(>_*)
-	}
-
-	//UTF8
-	if(type == 0)	return 0;
-
-	//GBK to UTF8
-	while(*src)
-	{
-		ch = *src;
-		if(ch < 0x80)
-		{
-			*dst++= ch;
-			src ++;
-		} 
-		else
-		{
-			ucode = charsets_gbk_to_ucs(src);
-
-			if (ucode < 0x800) //two byte
-			{
-				*dst++ = 0xC0 | ((ucode >> 6) & 0x1F);
-				*dst++ = 0x80 | (ucode & 0x3F);
-			}
-			else /* if(ucode < 0x10000) */ //3 bytes
-			{
-				*dst++ = 0xE0 | (ucode >> 12);
-				*dst++ = 0x80 | ((ucode >>6) & 0x3F);
-				*dst++ = 0x80 | (ucode & 0x3F);
-			}
-
-			src += 2;
-		}
-	}
-	*dst = '\0';
-
-	return 1;
+	/* PS2 menu font is Latin-1 only. Keep cheat names as stored;
+	 * the old GBK tables lived in charsets.c and were never drawn. */
+	(void)src;
+	(void)dst;
+	return 0;
 }
 
 unsigned char* utf8decode(unsigned char *utf8, uint16_t *ucs)
