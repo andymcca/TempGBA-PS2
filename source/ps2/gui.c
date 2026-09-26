@@ -334,14 +334,19 @@ int load_file(char **wildcards, char *result)
 			switch(Action)
 			{
 				case GUI_ACTION_ENTER:
-					if(current_entry <= num_dirs - 1)
+					/* num_dirs is unsigned. num_dirs - 1 when there are no
+					 * folders (MMCE listings often omit "." / "..") wraps and
+					 * every file looks like a directory. ps2Chdir(NULL) then
+					 * resets the browser to the device list. */
+					if(num_dirs > 0 && current_entry < num_dirs)
 					{
 						repeat = 0;
-						ps2Chdir(dir_list[current_entry]);
+						if(dir_list[current_entry] != NULL)
+							ps2Chdir(dir_list[current_entry]);
 					}
 					else
 					{
-						if(num_files != 0)
+						if(num_files != 0 && current_entry >= num_dirs)
 						{
 							repeat = 0;
 							return_value = 0;
