@@ -31,6 +31,11 @@ EE_OBJS = $(COMMON_OBJS) draw.o main.o ps2input.o ps2memory.o \
 		iomanX_irx.o usbhdfsd_irx.o usbd_irx.o freesd_irx.o audsrv_irx.o \
 		poweroff_irx.o fileXio_irx.o ps2atad_irx.o ps2fs_irx.o ps2hdd_irx.o ps2dev9_irx.o \
 		smscdvd_irx.o gba_bios_bin.o
+
+ifneq ($(PCSX2),1)
+# sio2man 2.7 is loaded at boot. mmceman / mx4sio are loaded on open.
+EE_OBJS += sio2man_embed.o bdm_irx.o bdmfs_vfat_irx.o mmceman_embed.o mx4sio_bd_embed.o
+endif
 		
 all: $(EE_BIN)
 
@@ -43,6 +48,15 @@ smscdvd_irx.o: SMSCDVD/smscdvd.irx
 %_irx.o: $(PS2SDK)/iop/irx/%.irx
 	bin2s $^ $*_irx.s $*_irx
 	$(EE_AS) $(EE_ASFLAGS) $*_irx.s -o $@
+sio2man_embed.o: irx/sio2man.irx
+	bin2s $^ sio2man_irx.s sio2man_irx
+	$(EE_AS) $(EE_ASFLAGS) sio2man_irx.s -o $@
+mmceman_embed.o: irx/mmceman.irx
+	bin2s $^ mmceman_irx.s mmceman_irx
+	$(EE_AS) $(EE_ASFLAGS) mmceman_irx.s -o $@
+mx4sio_bd_embed.o: irx/mx4sio_bd.irx
+	bin2s $^ mx4sio_bd_irx.s mx4sio_bd_irx
+	$(EE_AS) $(EE_ASFLAGS) mx4sio_bd_irx.s -o $@
 SMSCDVD/smscdvd.irx:
 	make -C SMSCDVD
 pcsx2:

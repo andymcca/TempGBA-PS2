@@ -169,7 +169,7 @@ int main(int argc, char *argv[])
 	char load_filename[MAX_PATH];
 	char file[MAX_PATH];
 
-	ps2init();
+	ps2init((argc > 0) ? argv[0] : NULL);
 	init_video();
 	init_input();
 	init_audio();

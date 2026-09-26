@@ -11,6 +11,7 @@
 #include <libpwroff.h>
 #include <sifrpc.h>
 #include <sys/fcntl.h>
+#include <string.h>
 
 //#define DPRINTF(x...) sio_printf(x)
 #define DPRINTF(x...)
@@ -54,6 +55,23 @@ extern int size_poweroff_irx;
 extern u8 smscdvd_irx[];
 extern int size_smscdvd_irx;
 
+#ifndef HOST
+extern u8 bdm_irx[];
+extern int size_bdm_irx;
+
+extern u8 bdmfs_vfat_irx[];
+extern int size_bdmfs_vfat_irx;
+
+extern u8 sio2man_irx[];
+extern int size_sio2man_irx;
+
+extern u8 mmceman_irx[];
+extern int size_mmceman_irx;
+
+extern u8 mx4sio_bd_irx[];
+extern int size_mx4sio_bd_irx;
+#endif
+
 static int initdirs();
 static int get_part_list();
 static void load_hddmodules();
@@ -66,6 +84,11 @@ static int ensure_hdd(void);
 static int is_pfs_dev(const char *s);
 static int resolve_pfs_dir(char *path, int is_main);
 static int parse_hdd0_pfs_argv(const char *argv, char *out);
+#ifndef HOST
+static int load_mmce_modules(void);
+static int load_mx4sio_modules(void);
+static int path_has_dev(const char *path, const char *dev);
+#endif
 
 static void load_modules()
 {
@@ -81,12 +104,15 @@ static void load_modules()
 	SifExecModuleBuffer(fileXio_irx, size_fileXio_irx, 0, NULL, NULL);
 #else
 	/* Hardware: iomanX first so mc / mass / pfs all attach to it.
-	 * Then the stock rom0 modules (no X* probe — missing XSIO2MAN can
-	 * hang loadfile). MCMAN after iomanX is what makes mc0: visible. */
+	 * mmceman only shares SIO2 when sio2man is library version 1.2 or 2.7.
+	 * rom0:SIO2MAN is older, so the lock is skipped, the directory read
+	 * collides with the pad, and the controller stops after the list.
+	 * This embedded module is ps2sdk sio2man 2.7. MCMAN and PADMAN stay
+	 * the ROM modules, which that sio2man still speaks. */
 	SifExecModuleBuffer(iomanX_irx, size_iomanX_irx, 0, NULL, NULL);
 	SifExecModuleBuffer(fileXio_irx, size_fileXio_irx, 0, NULL, NULL);
 
-	SifLoadModule("rom0:SIO2MAN", 0, NULL);
+	SifExecModuleBuffer(sio2man_irx, size_sio2man_irx, 0, NULL, NULL);
 	SifLoadModule("rom0:MCMAN", 0, NULL);
 	SifLoadModule("rom0:MCSERV", 0, NULL);
 	SifLoadModule("rom0:PADMAN", 0, NULL);
@@ -143,8 +169,114 @@ int ps2quit()
 #endif
 }
 
-int ps2init()
+#ifndef HOST
+static int mmce_loaded = 0;
+static int mx4sio_loaded = 0;
+static char mx4sio_root[16];
+
+static int path_has_dev(const char *path, const char *dev)
 {
+	int i;
+
+	if (path == NULL || dev == NULL)
+		return 0;
+
+	for (i = 0; dev[i] != 0; i++)
+	{
+		char a = path[i];
+		char b = dev[i];
+
+		if (a == 0)
+			return 0;
+		if (a >= 'A' && a <= 'Z')
+			a += 32;
+		if (b >= 'A' && b <= 'Z')
+			b += 32;
+		if (a != b)
+			return 0;
+	}
+	return 1;
+}
+
+static int probe_mass_unit(int unit)
+{
+	char p[16];
+	int fd;
+
+	sprintf(p, "mass%d:/", unit);
+	fd = fileXioDopen(p);
+	if (fd >= 0)
+	{
+		fileXioDclose(fd);
+		return 1;
+	}
+	return 0;
+}
+
+static int load_mmce_modules(void)
+{
+	int ret = -1;
+	int id;
+
+	if (mmce_loaded)
+		return 1;
+	if (mx4sio_loaded)
+		return 0;
+
+	id = SifExecModuleBuffer(mmceman_irx, size_mmceman_irx, 0, NULL, &ret);
+	mmce_loaded = (id >= 0 && ret >= 0);
+	if (mmce_loaded)
+		ps2delay(2);
+	return mmce_loaded;
+}
+
+static int load_mx4sio_modules(void)
+{
+	int ret = -1;
+	int id;
+	int u;
+	int mass0_before;
+
+	if (mx4sio_loaded)
+		return (mx4sio_root[0] != 0);
+	if (mmce_loaded)
+		return 0;
+
+	/* BDM + fatfs so mx4sio_bd can export a mass unit. usbhdfsd already
+	 * owns mass: — extra units (mass1:) are what we look for. */
+	SifExecModuleBuffer(bdm_irx, size_bdm_irx, 0, NULL, &ret);
+	SifExecModuleBuffer(bdmfs_vfat_irx, size_bdmfs_vfat_irx, 0, NULL, &ret);
+
+	mass0_before = probe_mass_unit(0);
+	id = SifExecModuleBuffer(mx4sio_bd_irx, size_mx4sio_bd_irx, 0, NULL, &ret);
+	if (id < 0 || ret < 0)
+		return 0;
+
+	mx4sio_loaded = 1;
+	ps2delay(5);
+
+	for (u = 1; u <= 3; u++)
+	{
+		if (probe_mass_unit(u))
+		{
+			sprintf(mx4sio_root, "mass%d:/", u);
+			return 1;
+		}
+	}
+
+	if (!mass0_before && probe_mass_unit(0))
+	{
+		strcpy(mx4sio_root, "mass0:/");
+		return 1;
+	}
+
+	return 0;
+}
+#endif
+
+int ps2init(const char *argv0)
+{
+   (void)argv0;
    SifInitRpc(0);
 #ifndef DEBUG
    while(!SifIopReset(NULL, 0)){};
@@ -180,29 +312,30 @@ int ps2init()
 
 void WaitPadReady(int port, int slot)
 {
-	int state, lastState;
-	char stateString[16];
+	int state;
+	int spins = 0;
 
 	state = padGetState(port, slot);
-	lastState = -1;
 	while((state != PAD_STATE_DISCONN)
 		&& (state != PAD_STATE_STABLE)
 		&& (state != PAD_STATE_FINDCTP1)){
-		if (state != lastState)
-			padStateInt2String(state, stateString);
-		lastState = state;
+		if (++spins > 2000000)
+			return;
 		state=padGetState(port, slot);
 	}
 }
 void Wait_Pad_Ready(void)
 {
 	int state_1, state_2;
+	int spins = 0;
 
 	state_1 = padGetState(0, 0);
 	state_2 = padGetState(1, 0);
 	while((state_1 != PAD_STATE_DISCONN) && (state_2 != PAD_STATE_DISCONN)
 		&& (state_1 != PAD_STATE_STABLE) && (state_2 != PAD_STATE_STABLE)
 		&& (state_1 != PAD_STATE_FINDCTP1) && (state_2 != PAD_STATE_FINDCTP1)){
+		if (++spins > 2000000)
+			return;
 		state_1 = padGetState(0, 0);
 		state_2 = padGetState(1, 0);
 	}
@@ -327,13 +460,21 @@ PS2DIR * ps2Opendir(char *path)
 {
     int fd = -1;
 	PS2DIR *ptr;
+	char real[MAX_NAME];
 	
 	DPRINTF("opendir %s\n", path);
+
+	strncpy(real, path, MAX_NAME - 1);
+	real[MAX_NAME - 1] = 0;
+#ifndef HOST
+	if (path_has_dev(real, "mx4sio:") && mx4sio_root[0])
+		strncpy(real, mx4sio_root, MAX_NAME - 1);
+#endif
     
-    if(!strncmp(path, "MAIN", 4) || !strcmp(path, "hdd0:/"))
+    if(!strncmp(real, "MAIN", 4) || !strcmp(real, "hdd0:/"))
     goto end;
 	
-	fd = ps2Dopen(path);
+	fd = ps2Dopen(real);
 	
 	DPRINTF("fd %d\n", fd);
 		
@@ -348,7 +489,7 @@ PS2DIR * ps2Opendir(char *path)
 		return NULL;
 	
 	ptr->d_fd = fd;
-	strcpy(ptr->d_name, path);
+	strcpy(ptr->d_name, real);
 	
 	return ptr;
 }
@@ -416,7 +557,7 @@ struct ps2dirent *ps2Readdir(PS2DIR *d)
                       break;
         }
 #else
-        if(dir_ctr > 4)
+        if(dir_ctr > 7)
         {
             dir_ctr = 0;
             return NULL;      
@@ -431,8 +572,14 @@ struct ps2dirent *ps2Readdir(PS2DIR *d)
               case 2:
                    sprintf(d->d_entry->d_name, "mass:/"); break;
               case 3:
-                   sprintf(d->d_entry->d_name, "cdfs:/"); break;
+                   sprintf(d->d_entry->d_name, "MMCE0:/"); break;
               case 4:
+                   sprintf(d->d_entry->d_name, "MMCE1:/"); break;
+              case 5:
+                   sprintf(d->d_entry->d_name, "MX4SIO:/"); break;
+              case 6:
+                   sprintf(d->d_entry->d_name, "cdfs:/"); break;
+              case 7:
                    sprintf(d->d_entry->d_name, "hdd0:/"); break;
               default:
                       break;     
@@ -518,6 +665,28 @@ int ps2Chdir(char *path)
 					hddinited = 1;            
         		}
     		}
+#ifndef HOST
+			else if (path_has_dev(path, "mmce0:"))
+			{
+				load_mmce_modules();
+				strcpy(mainPath, "mmce0:/");
+				return 1;
+			}
+			else if (path_has_dev(path, "mmce1:"))
+			{
+				load_mmce_modules();
+				strcpy(mainPath, "mmce1:/");
+				return 1;
+			}
+			else if (path_has_dev(path, "mx4sio:"))
+			{
+				if (load_mx4sio_modules() && mx4sio_root[0])
+					strcpy(mainPath, mx4sio_root);
+				else
+					strcpy(mainPath, "mx4sio:/");
+				return 1;
+			}
+#endif
     		
     		strcpy(mainPath, path);
 		}
@@ -1119,7 +1288,18 @@ int ps2GetMainPath(char *path, char *argv)
 	
 	DPRINTF("argv %s\n", path);
 	
-	return check_dir(path, 1);
+	if (check_dir(path, 1))
+		return 1;
+#ifndef HOST
+	/* LaunchELF maps MX4SIO as mass#:/ — driver is gone after IOP reset. */
+	if (path_has_dev(path, "mass:") || path_has_dev(path, "mx4sio:") ||
+		(argv != NULL && (path_has_dev(argv, "mass:") || path_has_dev(argv, "mx4sio:"))))
+	{
+		if (load_mx4sio_modules())
+			return check_dir(path, 1);
+	}
+#endif
+	return 0;
 }
 
 #define PS2FGETS_BUF 8192
