@@ -62,6 +62,9 @@ extern int size_bdm_irx;
 extern u8 bdmfs_vfat_irx[];
 extern int size_bdmfs_vfat_irx;
 
+extern u8 sio2man_irx[];
+extern int size_sio2man_irx;
+
 extern u8 mmceman_irx[];
 extern int size_mmceman_irx;
 
@@ -101,12 +104,15 @@ static void load_modules()
 	SifExecModuleBuffer(fileXio_irx, size_fileXio_irx, 0, NULL, NULL);
 #else
 	/* Hardware: iomanX first so mc / mass / pfs all attach to it.
-	 * Then the stock rom0 modules (no X* probe — missing XSIO2MAN can
-	 * hang loadfile). MCMAN after iomanX is what makes mc0: visible. */
+	 * mmceman only shares SIO2 when sio2man is library version 1.2 or 2.7.
+	 * rom0:SIO2MAN is older, so the lock is skipped, the directory read
+	 * collides with the pad, and the controller stops after the list.
+	 * This embedded module is ps2sdk sio2man 2.7. MCMAN and PADMAN stay
+	 * the ROM modules, which that sio2man still speaks. */
 	SifExecModuleBuffer(iomanX_irx, size_iomanX_irx, 0, NULL, NULL);
 	SifExecModuleBuffer(fileXio_irx, size_fileXio_irx, 0, NULL, NULL);
 
-	SifLoadModule("rom0:SIO2MAN", 0, NULL);
+	SifExecModuleBuffer(sio2man_irx, size_sio2man_irx, 0, NULL, NULL);
 	SifLoadModule("rom0:MCMAN", 0, NULL);
 	SifLoadModule("rom0:MCSERV", 0, NULL);
 	SifLoadModule("rom0:PADMAN", 0, NULL);
@@ -306,29 +312,30 @@ int ps2init(const char *argv0)
 
 void WaitPadReady(int port, int slot)
 {
-	int state, lastState;
-	char stateString[16];
+	int state;
+	int spins = 0;
 
 	state = padGetState(port, slot);
-	lastState = -1;
 	while((state != PAD_STATE_DISCONN)
 		&& (state != PAD_STATE_STABLE)
 		&& (state != PAD_STATE_FINDCTP1)){
-		if (state != lastState)
-			padStateInt2String(state, stateString);
-		lastState = state;
+		if (++spins > 2000000)
+			return;
 		state=padGetState(port, slot);
 	}
 }
 void Wait_Pad_Ready(void)
 {
 	int state_1, state_2;
+	int spins = 0;
 
 	state_1 = padGetState(0, 0);
 	state_2 = padGetState(1, 0);
 	while((state_1 != PAD_STATE_DISCONN) && (state_2 != PAD_STATE_DISCONN)
 		&& (state_1 != PAD_STATE_STABLE) && (state_2 != PAD_STATE_STABLE)
 		&& (state_1 != PAD_STATE_FINDCTP1) && (state_2 != PAD_STATE_FINDCTP1)){
+		if (++spins > 2000000)
+			return;
 		state_1 = padGetState(0, 0);
 		state_2 = padGetState(1, 0);
 	}
