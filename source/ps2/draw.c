@@ -78,6 +78,8 @@ uint32_t CurrentScreenOverscanY = 99;
 static bool InFileAction = false;
 static enum ReGBA_FileAction CurrentFileAction;
 static struct timespec LastProgressUpdate;
+static unsigned RomCacheKibibytes;
+static char ProgressLineBuf[80];
 
 GSGLOBAL *gsGlobal;
 GSTEXTURE gsTexture;
@@ -920,7 +922,15 @@ static void ProgressUpdateInternal(uint32_t Current, uint32_t Total)
 			Line = "Writing saved state";
 			break;
 		case FILE_ACTION_LOAD_ROM_FROM_FILE:
-			Line = "Reading ROM from a file";
+			if (RomCacheKibibytes != 0)
+			{
+				sprintf(ProgressLineBuf, "Loading %u.%u MB of ROM file into memory",
+					RomCacheKibibytes / 1024,
+					((RomCacheKibibytes % 1024) * 10) / 1024);
+				Line = ProgressLineBuf;
+			}
+			else
+				Line = "Loading ROM file into memory";
 			break;
 		case FILE_ACTION_DECOMPRESS_ROM_TO_RAM:
 			Line = "Decompressing ROM";
@@ -950,15 +960,26 @@ static void ProgressUpdateInternal(uint32_t Current, uint32_t Total)
 	
 	clear_screen(COLOR_PROGRESS_BACKGROUND);
 
-	draw_rect((gsTexture.Width - PROGRESS_WIDTH) / 2, (gsTexture.Height - PROGRESS_HEIGHT) / 2, PROGRESS_WIDTH, 1, COLOR_PROGRESS_OUTLINE);
-	
-	draw_rect((gsTexture.Width - PROGRESS_WIDTH) / 2, (gsTexture.Height - PROGRESS_HEIGHT) / 2 + PROGRESS_HEIGHT - 1, PROGRESS_WIDTH, 1, COLOR_PROGRESS_OUTLINE);
-	
-	draw_rect((gsTexture.Width - PROGRESS_WIDTH) / 2, (gsTexture.Height - PROGRESS_HEIGHT) / 2, 1, PROGRESS_HEIGHT, COLOR_PROGRESS_OUTLINE);
-	
-	draw_rect((gsTexture.Width + PROGRESS_WIDTH) / 2 - 1, (gsTexture.Height - PROGRESS_HEIGHT) / 2, 1, PROGRESS_HEIGHT, COLOR_PROGRESS_OUTLINE);
-	
-	draw_rect((gsTexture.Width - PROGRESS_WIDTH) / 2 + 1, (gsTexture.Height - PROGRESS_HEIGHT) / 2 + 1, (uint32_t) ((uint64_t) Current * (PROGRESS_WIDTH - 2) / Total), PROGRESS_HEIGHT - 2, COLOR_PROGRESS_CONTENT);
+	{
+		uint32_t box_w = GetRenderedWidth(Line) + 32;
+		int box_x, box_y;
+
+		if (box_w < PROGRESS_WIDTH)
+			box_w = PROGRESS_WIDTH;
+		if (box_w + 16 > gsTexture.Width)
+			box_w = gsTexture.Width - 16;
+
+		box_x = (int)(gsTexture.Width - box_w) / 2;
+		box_y = (int)(gsTexture.Height - PROGRESS_HEIGHT) / 2;
+
+		draw_rect(box_x, box_y, box_w, 1, COLOR_PROGRESS_OUTLINE);
+		draw_rect(box_x, box_y + PROGRESS_HEIGHT - 1, box_w, 1, COLOR_PROGRESS_OUTLINE);
+		draw_rect(box_x, box_y, 1, PROGRESS_HEIGHT, COLOR_PROGRESS_OUTLINE);
+		draw_rect(box_x + (int)box_w - 1, box_y, 1, PROGRESS_HEIGHT, COLOR_PROGRESS_OUTLINE);
+		draw_rect(box_x + 1, box_y + 1,
+			(uint32_t)((uint64_t)Current * (box_w - 2) / Total),
+			PROGRESS_HEIGHT - 2, COLOR_PROGRESS_CONTENT);
+	}
 
 /*	SDL_Rect TopLine = { (gsTexture->Width - PROGRESS_WIDTH) / 2, (gsTexture->Height - PROGRESS_HEIGHT) / 2, PROGRESS_WIDTH, 1 };
 	SDL_FillRect(OutputSurface, &TopLine, COLOR_PROGRESS_OUTLINE);
@@ -983,6 +1004,11 @@ static void ProgressUpdateInternal(uint32_t Current, uint32_t Total)
 	ReGBA_VideoFlip();
 	
 	use_scaler = temp;
+}
+
+void ReGBA_SetRomCacheKibibytes(unsigned kibibytes)
+{
+	RomCacheKibibytes = kibibytes;
 }
 
 void ReGBA_ProgressInitialise(enum ReGBA_FileAction Action)
@@ -1015,5 +1041,6 @@ void ReGBA_ProgressUpdate(uint32_t Current, uint32_t Total)
 void ReGBA_ProgressFinalise()
 {
 	InFileAction = false;
+	RomCacheKibibytes = 0;
 	resume_audio();
 }
