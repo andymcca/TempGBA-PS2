@@ -338,6 +338,8 @@ extern void call_bios_hle(void* func);
                                                                               \
     if(pc_address_block == NULL)                                              \
       pc_address_block = load_gamepak_page(pc_region & 0x3FF);                \
+    else if(((pc) >> 24) >= 0x08 && ((pc) >> 24) <= 0x0D)                     \
+      touch_gamepak_page(pc_address_block);                                   \
   }                                                                           \
 
 #ifdef PERFORMANCE_IMPACTING_STATISTICS
@@ -3338,6 +3340,8 @@ u8* translate_block_##type(u32 pc)                                            \
                                                                               \
   if (pc_address_block == NULL)                                               \
     pc_address_block = load_gamepak_page(pc_region & 0x3FF);                  \
+  else if ((pc >> 24) >= 0x08 && (pc >> 24) <= 0x0D)                          \
+    touch_gamepak_page(pc_address_block);                                     \
                                                                               \
   switch(pc >> 24)                                                            \
   {                                                                           \

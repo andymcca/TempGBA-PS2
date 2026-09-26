@@ -516,8 +516,11 @@ uint8_t* ReGBA_AllocateROM(size_t Size);
  *   Buffer points to a variable that points to non-NULL. If it doesn't, then
  *   this is a fatal error.
  *   The return value is a multiple of 32768.
+ * Input:
+ *   rom_bytes: Size of the ROM image, rounded up to a page. Ports that can
+ *   hold this entirely should not shrink the buffer below it.
  */
-size_t ReGBA_AllocateOnDemandBuffer(void** Buffer);
+size_t ReGBA_AllocateOnDemandBuffer(void** Buffer, size_t rom_bytes);
 
 /*
  * Frees the last allocation of memory made without a backing file by the port
@@ -553,6 +556,10 @@ size_t FILE_LENGTH(FILE_TAG_TYPE File);
  *   Action: The action being started.
  */
 void ReGBA_ProgressInitialise(enum ReGBA_FileAction Action);
+
+/* If kibibytes is non-zero, FILE_ACTION_LOAD_ROM_FROM_FILE shows
+ * "Loading N.N MB of ROM file into memory". */
+void ReGBA_SetRomCacheKibibytes(unsigned kibibytes);
 
 /*
  * Update the progress indication for the action started by the last call to

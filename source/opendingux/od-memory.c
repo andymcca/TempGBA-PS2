@@ -98,7 +98,7 @@ uint8_t* ReGBA_AllocateROM(size_t Size)
 	return Result;
 }
 
-size_t ReGBA_AllocateOnDemandBuffer(void** Buffer)
+size_t ReGBA_AllocateOnDemandBuffer(void** Buffer, size_t rom_bytes)
 {
 	/* At the end of this function, the ROM buffer will have been sized so
 	 * that at least 2 MiB are left for other operations.
@@ -107,6 +107,7 @@ size_t ReGBA_AllocateOnDemandBuffer(void** Buffer)
 
 	/* Start with trying to get 34 MiB. Let go in 1 MiB increments. */
 	size_t Size = 34 * 1024 * 1024;
+	(void)rom_bytes;
 	Result = malloc(Size);
 	while (Result == NULL)
 	{

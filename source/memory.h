@@ -24,6 +24,11 @@
 
 #define SAVESTATE_SIZE  0x80000 // 512K Byte (524288 Byte)
 #define SVS_HEADER_SIZE 12
+
+/* 32 KiB is one GBA cart window (address >> 15). A miss reads one window.
+ * The first ROM_PINNED_PAGES stay mapped once the cache is large enough. */
+#define ROM_PAGE_BYTES    (32 * 1024)
+#define ROM_PINNED_PAGES  64
 extern const u8 SVS_HEADER_E[SVS_HEADER_SIZE];
 extern const u8 SVS_HEADER_F[SVS_HEADER_SIZE];
 #define SVS_FILE_SIZE (SAVESTATE_SIZE+SVS_HEADER_SIZE)
@@ -294,6 +299,7 @@ u32 load_backup();
 
 size_t load_gamepak(char *file_path);
 u8 *load_gamepak_page(u16 physical_index);
+void touch_gamepak_page(u8 *block);
 void init_memory();
 void init_gamepak_buffer();
 

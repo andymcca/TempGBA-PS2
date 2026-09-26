@@ -237,11 +237,17 @@ void ReGBA_OnGameLoaded(const char* GamePath)
 
 	if (FILE_CHECK_VALID(gamepak_file_large))
 	{
-		printf("WARNING: '%s' is paged from storage (%u KiB file, %u KiB buffer). "
-			"fileXio page-ins can hitch or freeze.\r\n",
-			GamePath,
-			(unsigned)(gamepak_size / 1024),
-			(unsigned)(gamepak_ram_buffer_size / 1024));
+		if (gamepak_ram_buffer_size >= gamepak_size)
+			printf("ROM cached: '%s' (%u KiB in EE RAM, no runtime fileXio reads)\r\n",
+				GamePath,
+				(unsigned)(gamepak_ram_buffer_size / 1024));
+		else
+			printf("ROM paged: '%s' (%u KiB file, %u KiB cache filled from 08000000). "
+				"A miss reads 32 KiB. The first %u KiB stays resident.\r\n",
+				GamePath,
+				(unsigned)(gamepak_size / 1024),
+				(unsigned)(gamepak_ram_buffer_size / 1024),
+				(unsigned)((ROM_PINNED_PAGES * ROM_PAGE_BYTES) / 1024));
 	}
 	else
 	{

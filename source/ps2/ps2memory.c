@@ -104,13 +104,15 @@ uint8_t* ReGBA_AllocateROM(size_t Size)
 	return Result;
 }
 
-size_t ReGBA_AllocateOnDemandBuffer(void** Buffer)
+size_t ReGBA_AllocateOnDemandBuffer(void** Buffer, size_t rom_bytes)
 {
 	/* Take as much leftover EE heap as we can for 32 KiB ROM pages.
-	 * After the 6 MiB static JIT caches, a 32 MiB ROM will not fit, so this
-	 * buffer IS the working set. Leave 1 MiB for savestates / GUI. */
-	const size_t reserve = 1 * 1024 * 1024;
-	size_t Size = 24 * 1024 * 1024;
+	 * A 32 MiB ROM cannot fit next to the JIT caches. Step by 128 KiB
+	 * so a 15.x MiB hole is not reported as 14 MiB. A GUI reserve is
+	 * kept only when the whole image already fits. */
+	const size_t reserve = 256 * 1024;
+	const size_t step = 128 * 1024;
+	size_t Size = 28 * 1024 * 1024;
 	void* Result = NULL;
 
 	while (Size >= (512 * 1024))
@@ -118,20 +120,27 @@ size_t ReGBA_AllocateOnDemandBuffer(void** Buffer)
 		Result = memalign(64, Size);
 		if (Result != NULL)
 			break;
-		Size -= 1024 * 1024;
+		Size -= step;
 	}
 
-	if (Result != NULL && Size > reserve + (512 * 1024))
+	if (Result != NULL && rom_bytes != 0 && Size >= rom_bytes &&
+	    Size > reserve + (512 * 1024) && (Size - reserve) >= rom_bytes)
 	{
+		size_t shrunk = Size - reserve;
 		free(Result);
-		Size -= reserve;
-		Result = memalign(64, Size);
+		Result = memalign(64, shrunk);
+		if (Result != NULL)
+			Size = shrunk;
+		else
+			Result = memalign(64, Size);
 	}
 
 	*Buffer = Result;
 	if (Result != NULL)
-		printf("On-demand ROM buffer: %u KiB (%u pages of 32 KiB)\r\n",
-			(unsigned)(Size / 1024), (unsigned)(Size / (32 * 1024)));
+		printf("On-demand ROM buffer: %u KiB (%u pages), ROM %u KiB\r\n",
+			(unsigned)(Size / 1024),
+			(unsigned)(Size / ROM_PAGE_BYTES),
+			(unsigned)(rom_bytes / 1024));
 	else
 		printf("On-demand ROM buffer allocation failed\r\n");
 	return Result != NULL ? Size : 0;

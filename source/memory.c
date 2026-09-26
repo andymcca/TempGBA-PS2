@@ -23,10 +23,15 @@
 u8 savestate_write_buffer[SAVESTATE_SIZE];
 u8 *g_state_buffer_ptr;
 
-#define SAVESTATE_REWIND_SIZE (SAVESTATE_REWIND_LEN*SAVESTATE_REWIND_NUM)	//~5MB
 #define SAVESTATE_REWIND_LEN (0x69040)
 #define SAVESTATE_REWIND_NUM (10)
+#define SAVESTATE_REWIND_SIZE (SAVESTATE_REWIND_LEN*SAVESTATE_REWIND_NUM)	//~4.1MB
+#ifndef _EE
+/* The PS2 build leaves this out of BSS. Nothing on that port calls
+ * savestate_rewind(), and the ring was large enough to push 16 MiB ROMs
+ * out of EE RAM and into USB paging. */
 u8 SAVESTATE_REWIND_MEM[ SAVESTATE_REWIND_SIZE ] __attribute__ ((aligned (4))) ;
+#endif
 
 const u8 SVS_HEADER_E[SVS_HEADER_SIZE] = {'R','E', 'G', 'B', 'A', 'R', 'T', 'S', '0', '.', '1', 'e'};
 const u8 SVS_HEADER_F[SVS_HEADER_SIZE] = {'R','E', 'G', 'B', 'A', 'R', 'T', 'S', '0', '.', '1', 'f'};
@@ -729,6 +734,8 @@ static u32 read32_oam_ram(u32 address)
                                                                               \
       if (read_rom_block == NULL)                                             \
         read_rom_block = load_gamepak_page(read_rom_region & 0x3FF);          \
+      else                                                                    \
+        touch_gamepak_page(read_rom_block);                                   \
     }                                                                         \
                                                                               \
     return ADDRESS##type(read_rom_block, address & mask);                     \
@@ -2569,19 +2576,60 @@ static void unmap_gamepak_physical(u32 physical_index)
 	memory_map_read[(0xC000000 / (32 * 1024)) + physical_index] = NULL;
 }
 
+void touch_gamepak_page(u8 *block)
+{
+	u32 slot;
+
+	if (block == NULL || gamepak_rom == NULL || gamepak_ram_pages == 0)
+		return;
+	if (block < gamepak_rom)
+		return;
+
+	slot = (u32)(block - gamepak_rom) / ROM_PAGE_BYTES;
+	if (slot >= gamepak_ram_pages)
+		return;
+	if (gamepak_memory_map[slot].page_timestamp == 0)
+		return;
+
+	gamepak_memory_map[slot].page_timestamp = page_time++;
+}
+
 static u32 evict_gamepak_page(void)
 {
-	/* Oldest timestamp, with unused (timestamp 0) slots preferred. */
+	/* Oldest timestamp, with unused (timestamp 0) slots preferred.
+	 * On the PS2 the first 2 MiB stays put once the cache is large enough. */
 	u32 page_index = 0;
-	u32 smallest = gamepak_memory_map[0].page_timestamp;
+	u32 smallest = 0xFFFFFFFFu;
+	u32 found = 0;
 	u32 i;
 
-	for (i = 1; i < gamepak_ram_pages; i++)
+	for (i = 0; i < gamepak_ram_pages; i++)
 	{
-		if (gamepak_memory_map[i].page_timestamp <= smallest)
+#ifdef _EE
+		if (gamepak_ram_pages > (ROM_PINNED_PAGES * 2) &&
+		    gamepak_memory_map[i].page_timestamp != 0 &&
+		    gamepak_memory_map[i].physical_index < ROM_PINNED_PAGES)
+			continue;
+#endif
+		if (!found || gamepak_memory_map[i].page_timestamp <= smallest)
 		{
 			smallest = gamepak_memory_map[i].page_timestamp;
 			page_index = i;
+			found = 1;
+		}
+	}
+
+	if (!found)
+	{
+		smallest = gamepak_memory_map[0].page_timestamp;
+		page_index = 0;
+		for (i = 1; i < gamepak_ram_pages; i++)
+		{
+			if (gamepak_memory_map[i].page_timestamp <= smallest)
+			{
+				smallest = gamepak_memory_map[i].page_timestamp;
+				page_index = i;
+			}
 		}
 	}
 
@@ -2642,23 +2690,6 @@ u8 *load_gamepak_page(u16 physical_index)
 	{
 		memcpy(swap_location + 0xC4, rtc_registers, sizeof(rtc_registers));
 	}
-
-#ifdef _EE
-	/* Sequential code/assets almost always need the next 32 KiB too.
-	 * Prefetch it while the file pointer is nearby. */
-	{
-		static int prefetch_depth = 0;
-		u32 next = (u32)physical_index + 1;
-		if (prefetch_depth == 0 &&
-		    next < (gamepak_size >> 15) &&
-		    memory_map_read[(0x08000000 / (32 * 1024)) + next] == NULL)
-		{
-			prefetch_depth = 1;
-			load_gamepak_page((u16)next);
-			prefetch_depth = 0;
-		}
-	}
-#endif
 
 	return swap_location;
 }
@@ -2884,11 +2915,18 @@ static void load_backup_id(void)
   eeprom_size = EEPROM_512_BYTE;
   backup_id[0] = 0;
 
-  /* Paged ROMs: scan from the file so we do not evict the working set, and
-   * keep the first N pages (typically code at 08000000) in the buffer. */
+  /* Paged ROMs: fill the cache from 08000000, and scan save-type strings
+   * in the same pass. Bytes past the cache stay in a scratch buffer. */
   if (FILE_CHECK_VALID(gamepak_file_large) && gamepak_rom != NULL && gamepak_ram_pages > 0)
   {
-    static u8 scan_scratch[32 * 1024];
+#ifdef _EE
+    u8 *scan_scratch;
+    u32 scan_run_max;
+#else
+    static u8 scan_scratch_stat[ROM_PAGE_BYTES];
+    u8 *scan_scratch = scan_scratch_stat;
+    u32 scan_run_max = 1;
+#endif
     u32 rom_pages = gamepak_size >> 15;
     u32 prefill = gamepak_ram_pages;
     u32 phys, off;
@@ -2896,29 +2934,78 @@ static void load_backup_id(void)
     if (prefill > rom_pages)
       prefill = rom_pages;
 
+#ifdef _EE
+    /* Scratch is heap, not BSS, so the page cache can use that 512 KiB. */
+    scan_run_max = 16;
+    scan_scratch = malloc(scan_run_max * ROM_PAGE_BYTES);
+    if (scan_scratch == NULL)
+    {
+      static u8 scan_fallback[ROM_PAGE_BYTES];
+      scan_run_max = 1;
+      scan_scratch = scan_fallback;
+    }
+    ReGBA_SetRomCacheKibibytes(prefill * (ROM_PAGE_BYTES / 1024));
+    ReGBA_ProgressInitialise(FILE_ACTION_LOAD_ROM_FROM_FILE);
+#endif
+
     FILE_SEEK(gamepak_file_large, 0, SEEK_SET);
 
-    for (phys = 0; phys < rom_pages; phys++)
+    phys = 0;
+    while (phys < rom_pages)
     {
-      int filling = (phys < prefill);
-      u8 *dest = filling ? (gamepak_rom + phys * (32 * 1024)) : scan_scratch;
+      u32 run = 1;
+      u32 n;
+      int filling;
+      u8 *dest;
 
-      FILE_READ(gamepak_file_large, dest, 32 * 1024);
+      if (phys >= prefill && find_id > 1)
+        break;
 
+      filling = (phys < prefill);
       if (filling)
       {
-        gamepak_memory_map[phys].physical_index = (u16)phys;
-        map_gamepak_slot(phys, phys);
+        run = prefill - phys;
+        dest = gamepak_rom + phys * ROM_PAGE_BYTES;
+      }
+      else
+      {
+        run = rom_pages - phys;
+        dest = scan_scratch;
+      }
+      if (run > scan_run_max)
+        run = scan_run_max;
+
+      FILE_READ(gamepak_file_large, dest, run * ROM_PAGE_BYTES);
+
+      for (n = 0; n < run; n++)
+      {
+        u8 *page = dest + n * ROM_PAGE_BYTES;
+
+        if (phys + n < prefill)
+        {
+          gamepak_memory_map[phys + n].physical_index = (u16)(phys + n);
+          map_gamepak_slot(phys + n, phys + n);
+        }
+
+        if (find_id <= 1)
+        {
+          for (off = 0; off < ROM_PAGE_BYTES; off += 4)
+            scan_backup_id_word((u32 *)(page + off), &find_id, backup_type_id);
+        }
       }
 
-      if (find_id <= 1)
-      {
-        for (off = 0; off < (32 * 1024); off += 4)
-          scan_backup_id_word((u32 *)(dest + off), &find_id, backup_type_id);
-      }
-      else if (!filling)
-        break;
+      phys += run;
+#ifdef _EE
+      ReGBA_ProgressUpdate(phys, rom_pages);
+#endif
     }
+
+#ifdef _EE
+    ReGBA_ProgressUpdate(rom_pages, rom_pages);
+    ReGBA_ProgressFinalise();
+    if (scan_run_max > 1)
+      free(scan_scratch);
+#endif
 
     /* Page 0 is newest so the first eviction drops the tail of the prefill. */
     page_time = 1;
@@ -2926,8 +3013,14 @@ static void load_backup_id(void)
       gamepak_memory_map[phys - 1].page_timestamp = page_time++;
 
 #ifdef _EE
-    printf("ROM page cache prefilled: %u/%u pages (%u KiB resident at 08000000)\r\n",
-      (unsigned)prefill, (unsigned)rom_pages, (unsigned)(prefill * 32));
+    if (prefill >= rom_pages)
+      printf("ROM page cache holds the full image (%u KiB)\r\n",
+        (unsigned)(prefill * (ROM_PAGE_BYTES / 1024)));
+    else
+      printf("ROM page cache prefilled: %u/%u pages (%u KiB at 08000000). "
+        "A miss reads 32 KiB.\r\n",
+        (unsigned)prefill, (unsigned)rom_pages,
+        (unsigned)(prefill * (ROM_PAGE_BYTES / 1024)));
 #endif
 
     finish_backup_id(find_id, backup_type_id);
@@ -3372,7 +3465,8 @@ static ssize_t load_gamepak_raw(char *name_path)
 		{
 			// Read in just enough for the header
 			gamepak_file_large = gamepak_file;
-			gamepak_ram_buffer_size = ReGBA_AllocateOnDemandBuffer((void**) &gamepak_rom);
+			gamepak_ram_buffer_size = ReGBA_AllocateOnDemandBuffer((void**) &gamepak_rom,
+				(gamepak_size + (ROM_PAGE_BYTES - 1)) & ~(size_t)(ROM_PAGE_BYTES - 1));
 			if (gamepak_rom == NULL || gamepak_ram_buffer_size == 0)
 			{
 				FILE_CLOSE(gamepak_file);
@@ -3558,6 +3652,7 @@ void init_rewind(void)
 
 void savestate_rewind(void)
 {
+#ifndef _EE
 	g_state_buffer_ptr = SAVESTATE_REWIND_MEM + rewind_queue_wr_len * SAVESTATE_REWIND_LEN;
 	savestate_block(write_mem);
 
@@ -3567,10 +3662,12 @@ void savestate_rewind(void)
 
 	if(rewind_queue_len < SAVESTATE_REWIND_NUM)
 		rewind_queue_len += 1;
+#endif
 }
 
 void loadstate_rewind(void)
 {
+#ifndef _EE
 	int i;
 
 	if(rewind_queue_len == 0)  // There's no rewind data
@@ -3592,6 +3689,7 @@ void loadstate_rewind(void)
 
 	oam_update = 1;
 	reg[CHANGED_PC_STATUS] = 1;
+#endif
 }
 
 /*
