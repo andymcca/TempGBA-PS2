@@ -99,8 +99,12 @@ static void fill_line_normal(u16 color, render_scanline_dest_normal *dest_ptr, u
 static void fill_line_alpha(u16 color, render_scanline_dest_alpha *dest_ptr, u32 start, u32 end);
 static void fill_line_color16(u16 color, render_scanline_dest_color16 *dest_ptr, u32 start, u32 end);
 static void fill_line_color32(u16 color, render_scanline_dest_color32 *dest_ptr, u32 start, u32 end);
+#ifndef USE_EXPAND_BLEND_MIPS
+#define USE_EXPAND_BLEND_MIPS 1
+#endif
+#if !USE_EXPAND_BLEND_MIPS
 static void expand_blend(u32 *screen_src_ptr, u16 *screen_dest_ptr, u32 start, u32 end);
-static void expand_blend_c(u32 *screen_src_ptr, u16 *screen_dest_ptr, u32 start, u32 end);
+#endif
 static void expand_darken(u16 *screen_src_ptr, u16 *screen_dest_ptr, u32 start, u32 end);
 static void expand_brighten(u16 *screen_src_ptr, u16 *screen_dest_ptr, u32 start, u32 end);
 static void expand_darken_partial_alpha(u32 *screen_src_ptr, u16 *screen_dest_ptr, u32 start, u32 end);
@@ -2304,24 +2308,11 @@ fill_line_builder(color32);
 #define expand_normal(screen_ptr, start, end)
 
 /* EE asm in video_blend_mips.S. Set USE_EXPAND_BLEND_MIPS 0 to force C. */
-#ifndef USE_EXPAND_BLEND_MIPS
-#define USE_EXPAND_BLEND_MIPS 1
-#endif
-
 #if USE_EXPAND_BLEND_MIPS
 extern void expand_blend_mips(u32 *screen_src_ptr, u16 *screen_dest_ptr, u32 start, u32 end);
-#endif
-
-static void expand_blend(u32 *screen_src_ptr, u16 *screen_dest_ptr, u32 start, u32 end)
-{
-#if USE_EXPAND_BLEND_MIPS
-  expand_blend_mips(screen_src_ptr, screen_dest_ptr, start, end);
+#define expand_blend expand_blend_mips
 #else
-  expand_blend_c(screen_src_ptr, screen_dest_ptr, start, end);
-#endif
-}
-
-static void expand_blend_c(u32 *screen_src_ptr, u16 *screen_dest_ptr, u32 start, u32 end)
+static void expand_blend(u32 *screen_src_ptr, u16 *screen_dest_ptr, u32 start, u32 end)
 {
   u32 pixel_pair;
   u32 pixel_top, pixel_bottom;
@@ -2347,6 +2338,7 @@ static void expand_blend_c(u32 *screen_src_ptr, u16 *screen_dest_ptr, u32 start,
     expand_loop(blend, effect_condition_alpha, pixel_pair);
   }
 }
+#endif
 
 // Blend scanline with white.
 
@@ -2816,9 +2808,9 @@ static void render_scanline_conditional_bitmap(u32 start, u32 end, u16 *scanline
   window_##window_number##_enable = (winin >> (window_number << 3)) & 0x3F;   \
 
 #define window_coords(window_number)                                          \
-  u8 window_##window_number##_x1, window_##window_number##_x2;                \
-  u8 window_##window_number##_y1, window_##window_number##_y2;                \
-  u8 window_##window_number##_enable = 0;                                     \
+  u32 window_##window_number##_x1, window_##window_number##_x2;               \
+  u32 window_##window_number##_y1, window_##window_number##_y2;               \
+  u32 window_##window_number##_enable = 0;                                    \
   window_##window_number##_y1 = io_registers[REG_WIN##window_number##V] >> 8; \
   window_##window_number##_y2 = io_registers[REG_WIN##window_number##V] & 0xFF; \
                                                                               \

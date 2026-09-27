@@ -630,7 +630,7 @@ static void process_cheat_cht(CHEAT_TYPE *cheat)
 	u32 i, n;
 	unsigned int cheat_num;
 	unsigned int avtive_cheat_line;
-	unsigned char *dst;
+	u32 address;
 	unsigned char *src;
 
 	avtive_cheat_line = (cheat->num_cheat_lines) >> 16;
@@ -644,13 +644,13 @@ static void process_cheat_cht(CHEAT_TYPE *cheat)
 	}
 
 	cheat_num = cheat->cheat_codes[n];
-	dst = (unsigned char*)cheat->cheat_codes[n-1];
+	address = cheat->cheat_codes[n-1];
 	src = (unsigned char*)(&cheat->cheat_codes[n+1]);
 
-//printf("dst:%08x; src:%08x; len:%d; n:%d\n", dst, src, cheat_num, n);
+//printf("dst:%08x; src:%08x; len:%d; n:%d\n", address, src, cheat_num, n);
 //	memcpy(dst, src, cheat_num);
 	for(i= 0; i < cheat_num; i++)
-		write_memory8(dst++, src[i]);
+		write_memory8(address++, src[i]);
 }
 
 void process_cheats()

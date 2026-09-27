@@ -212,7 +212,7 @@ int main(int argc, char *argv[])
 	init_sound();
 
 	{
-	const char *boot_rom = (argc > 1) ? argv[1] : NULL;
+	char *boot_rom = (argc > 1) ? argv[1] : NULL;
 #ifdef HOST
 	static char host_rom[MAX_PATH];
 	if (boot_rom == NULL)

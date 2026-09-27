@@ -202,8 +202,8 @@ static int ( *Func_DRead  ) ( iop_io_file_t*, void*       );
 static int ( *Func_DClose ) ( iop_io_file_t*              );
 
 static int CDVD_init  ( iop_io_device_t*                      );
-static int CDVD_open  ( iop_io_file_t*, const char*, int, ... );
-static int CDVD_lseek ( iop_io_file_t*, unsigned long, int    );
+static int CDVD_open  ( iop_io_file_t*, const char*, int      );
+static int CDVD_lseek ( iop_io_file_t*, int, int              );
 static int CDVD_read  ( iop_io_file_t*, void*, int            );
 static int CDVD_write ( iop_io_file_t*, void*, int            );
 static int CDVD_close ( iop_io_file_t*                        );
@@ -373,7 +373,7 @@ static int ISO_Open ( iop_io_file_t* apFile, const char* name ) {
 
 }  /* end ISO_Open */
 
-static int CDVD_open ( iop_io_file_t* apFile, const char* apName, int aMode, ... ) {
+static int CDVD_open ( iop_io_file_t* apFile, const char* apName, int aMode ) {
 
  if ( aMode != O_RDONLY ) return -EACCES;
 
@@ -381,7 +381,7 @@ static int CDVD_open ( iop_io_file_t* apFile, const char* apName, int aMode, ...
 
 }  /* end CDVD_open */
 
-static int CDVD_lseek ( iop_io_file_t* apFile, unsigned long offset, int whence ) {
+static int CDVD_lseek ( iop_io_file_t* apFile, int offset, int whence ) {
 
  int i = _LookupFD (  ( int )apFile -> privdata  );
 
@@ -963,7 +963,7 @@ static int ISO_DRead ( iop_io_file_t* apFile, void* apRetVal ) {
 
 }  /* end ISO_DRead */
 
-static int CDVD_dread ( iop_io_file_t* apFile, void* apRetVal ) {
+static int CDVD_dread ( iop_io_file_t* apFile, io_dirent_t* apRetVal ) {
 
  return Func_DRead ( apFile, apRetVal );
 
@@ -1159,7 +1159,7 @@ static int CDVD_deinit ( iop_io_device_t* apDev ) {
 
 }  /* end CDVD_deinit */
 
-static int CDVD_format ( iop_io_file_t* apFile, ... ) {
+static int CDVD_format ( iop_io_file_t* apFile ) {
 
  return -ENOTSUP;
 
@@ -1177,13 +1177,13 @@ static int CDVD_dummy_file ( iop_io_file_t* apFile, const char* apName ) {
 
 }  /* end CDVD_dummy_file */
 
-static int CDVD_getstat ( iop_io_file_t* apFile, const char* apName, void* apRetVal ) {
+static int CDVD_getstat ( iop_io_file_t* apFile, const char* apName, io_stat_t* apRetVal ) {
 
  return -ENOTSUP;
 
 }  /* end CDVD_getstat */
 
-static int CDVD_chstat ( iop_io_file_t* apFile, const char* apName, void* apPtr, unsigned int aVal ) {
+static int CDVD_chstat ( iop_io_file_t* apFile, const char* apName, io_stat_t* apPtr, unsigned int aVal ) {
 
  return -ENOTSUP;
 
