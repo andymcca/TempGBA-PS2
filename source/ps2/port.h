@@ -138,6 +138,10 @@ extern uint32_t PerGameUserFrameskip;
 extern uint32_t UserFrameskip;
 extern uint32_t PerGameHblankIrqMode;
 extern uint32_t HblankIrqMode;
+extern uint32_t PerGameRamDynarecPolicy;
+extern uint32_t RamDynarecPolicy;
+
+void SyncRamDynarecPolicy(void);
 
 enum {
 	HBLANK_IRQ_TEMPGBA = 0, /* no scanline window (current TempGBA behaviour) */

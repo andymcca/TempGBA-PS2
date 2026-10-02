@@ -28,6 +28,20 @@ uint32_t PerGameUserFrameskip;
 uint32_t UserFrameskip;
 uint32_t PerGameHblankIrqMode;
 uint32_t HblankIrqMode;
+uint32_t PerGameRamDynarecPolicy;
+uint32_t RamDynarecPolicy = RAM_DYNAREC_PARTIAL_WITH_REUSE;
+
+void SyncRamDynarecPolicy(void)
+{
+	uint32_t resolved = ResolveSetting(RamDynarecPolicy, PerGameRamDynarecPolicy);
+	if (resolved > RAM_DYNAREC_PARTIAL_WITH_REUSE)
+		resolved = RAM_DYNAREC_PARTIAL_WITH_REUSE;
+	if (resolved != option_ram_dynarec_policy)
+	{
+		option_ram_dynarec_policy = resolved;
+		flush_translation_cache(TRANSLATION_REGION_WRITABLE, FLUSH_REASON_INITIALIZING);
+	}
+}
 
 void ReGBA_Trace(const char* Format, ...)
 {

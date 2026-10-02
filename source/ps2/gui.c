@@ -1914,6 +1914,15 @@ static struct MenuEntry DisplayMenu_HblankIrq = {
 	.ChoiceCount = 3, .Choices = { { "TEMPGBA", "tempgba" }, { "GPSP-KAI", "gpsp-kai" }, { "OFF", "off" } }
 };
 
+static struct MenuEntry PerGameDisplayMenu_RamDynarec = {
+	ENTRY_OPTION("ram_dynarec", "RAM dynarec", &PerGameRamDynarecPolicy),
+	.ChoiceCount = 4, .Choices = { { "No override", "" }, { "Full flush", "full_flush" }, { "Partial no reuse", "partial_no_reuse" }, { "Partial + reuse", "partial_reuse" } }
+};
+static struct MenuEntry DisplayMenu_RamDynarec = {
+	ENTRY_OPTION("ram_dynarec", "RAM dynarec", &RamDynarecPolicy),
+	.ChoiceCount = 3, .Choices = { { "Full flush", "full_flush" }, { "Partial no reuse", "partial_no_reuse" }, { "Partial + reuse", "partial_reuse" } }
+};
+
 static struct MenuEntry PerGameDisplayMenu_FastForwardTarget = {
 	ENTRY_OPTION("fast_forward_target", "Fast-forward target", &PerGameFastForwardTarget),
 	.ChoiceCount = 6, .Choices = { { "No override", "" }, { "2x (~120 FPS)", "2" }, { "3x (~180 FPS)", "3" }, { "4x (~240 FPS)", "4" }, { "5x (~300 FPS)", "5" }, { "6x (~360 FPS)", "6" } }
@@ -2001,12 +2010,12 @@ static struct Menu PerGameDisplayMenu = {
 	.Parent = &PerGameMainMenu, .Title = "Display settings",
 	MENU_PER_GAME,
 	.AlternateVersion = &DisplayMenu,
-	.Entries = { &PerGameDisplayMenu_BootSource, &PerGameDisplayMenu_FPSCounter, &PerGameDisplayMenu_VideoMode, &PerGameDisplayMenu_ScreenRatio, &PerGameDisplayMenu_VideoFilter, &PerGameDisplayMenu_ScaleMode, &PerGameDisplayMenu_Frameskip, &PerGameDisplayMenu_HblankIrq, &PerGameDisplayMenu_FastForwardTarget, &PerGameDisplayMenu_MenuRes, &PerGameDisplayMenu_ScreenPos, NULL }
+	.Entries = { &PerGameDisplayMenu_BootSource, &PerGameDisplayMenu_FPSCounter, &PerGameDisplayMenu_VideoMode, &PerGameDisplayMenu_ScreenRatio, &PerGameDisplayMenu_VideoFilter, &PerGameDisplayMenu_ScaleMode, &PerGameDisplayMenu_Frameskip, &PerGameDisplayMenu_HblankIrq, &PerGameDisplayMenu_RamDynarec, &PerGameDisplayMenu_FastForwardTarget, &PerGameDisplayMenu_MenuRes, &PerGameDisplayMenu_ScreenPos, NULL }
 };
 static struct Menu DisplayMenu = {
 	.Parent = &MainMenu, .Title = "Display settings",
 	.AlternateVersion = &PerGameDisplayMenu,
-	.Entries = { &DisplayMenu_BootSource, &DisplayMenu_FPSCounter, &DisplayMenu_VideoMode, &DisplayMenu_ScreenRatio, &DisplayMenu_VideoFilter, &DisplayMenu_ScaleMode, &DisplayMenu_Frameskip, &DisplayMenu_HblankIrq, &DisplayMenu_FastForwardTarget, &DisplayMenu_MenuRes, &DisplayMenu_ScreenPos, NULL }
+	.Entries = { &DisplayMenu_BootSource, &DisplayMenu_FPSCounter, &DisplayMenu_VideoMode, &DisplayMenu_ScreenRatio, &DisplayMenu_VideoFilter, &DisplayMenu_ScaleMode, &DisplayMenu_Frameskip, &DisplayMenu_HblankIrq, &DisplayMenu_RamDynarec, &DisplayMenu_FastForwardTarget, &DisplayMenu_MenuRes, &DisplayMenu_ScreenPos, NULL }
 };
 
 // -- Input Settings --
@@ -2499,6 +2508,8 @@ u32 ReGBA_Menu(enum ReGBA_MenuEntryReason EntryReason)
 	SetGameResolution();
 
 	clear_screens();
+
+	SyncRamDynarecPolicy();
 
 	resume_audio();
 

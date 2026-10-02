@@ -868,7 +868,9 @@ static u32 read32_open(u32 address)
 inline static CPU_ALERT_TYPE check_smc_write(u16 *metadata, u32 offset, u8 region)
 {
   /* Get the Metadata Entry's [3], bits 0-1, to see if there's code at this
-   * location. See "doc/partial flushing of RAM code.txt" for more info. */
+   * location. See "doc/partial flushing of RAM code.txt" for more info.
+   * Full flush: if those bits are set, dump the whole writable cache
+   * (no adjacent-entry walk). Same-value stores never reach here. */
   u16 smc = metadata[offset | 3] & 0x03;
   if (smc != 0) {
     partial_clear_metadata(offset, region);
@@ -877,44 +879,50 @@ inline static CPU_ALERT_TYPE check_smc_write(u16 *metadata, u32 offset, u8 regio
   return CPU_ALERT_NONE;
 }
 
-#define WRITE_EWRAM(type, mask)                                               \
+#define WRITE_EWRAM(type, mask, val_mask)                                     \
   address &= mask;                                                            \
+  if (option_ram_dynarec_policy == RAM_DYNAREC_FULL_FLUSH &&                   \
+      ADDRESS##type(ewram_data, address) == (value & (val_mask)))             \
+    return CPU_ALERT_NONE;                                                    \
   ADDRESS##type(ewram_data, address) = value;                                 \
   return check_smc_write(ewram_metadata, address, 0x02);                      \
 
 static CPU_ALERT_TYPE write8_ewram(u32 address, u32 value)
 {
-  WRITE_EWRAM(8, 0x3FFFF);
+  WRITE_EWRAM(8, 0x3FFFF, 0xFF);
 }
 
 static CPU_ALERT_TYPE write16_ewram(u32 address, u32 value)
 {
-  WRITE_EWRAM(16, 0x3FFFE);
+  WRITE_EWRAM(16, 0x3FFFE, 0xFFFF);
 }
 
 static CPU_ALERT_TYPE write32_ewram(u32 address, u32 value)
 {
-  WRITE_EWRAM(32, 0x3FFFC);
+  WRITE_EWRAM(32, 0x3FFFC, 0xFFFFFFFF);
 }
 
-#define WRITE_IWRAM(type, mask)                                               \
+#define WRITE_IWRAM(type, mask, val_mask)                                     \
   address &= mask;                                                            \
+  if (option_ram_dynarec_policy == RAM_DYNAREC_FULL_FLUSH &&                   \
+      ADDRESS##type(iwram_data, address) == (value & (val_mask)))             \
+    return CPU_ALERT_NONE;                                                    \
   ADDRESS##type(iwram_data, address) = value;                                 \
   return check_smc_write(iwram_metadata, address, 0x03);                      \
 
 static CPU_ALERT_TYPE write8_iwram(u32 address, u32 value)
 {
-  WRITE_IWRAM(8, 0x7FFF);
+  WRITE_IWRAM(8, 0x7FFF, 0xFF);
 }
 
 static CPU_ALERT_TYPE write16_iwram(u32 address, u32 value)
 {
-  WRITE_IWRAM(16, 0x7FFE);
+  WRITE_IWRAM(16, 0x7FFE, 0xFFFF);
 }
 
 static CPU_ALERT_TYPE write32_iwram(u32 address, u32 value)
 {
-  WRITE_IWRAM(32, 0x7FFC);
+  WRITE_IWRAM(32, 0x7FFC, 0xFFFFFFFF);
 }
 
 #define WRITE_IO_REGISTERS(type, mask)                                        \
@@ -959,34 +967,43 @@ static CPU_ALERT_TYPE write32_palette_ram(u32 address, u32 value)
   return CPU_ALERT_NONE;
 }
 
-#define WRITE_VRAM(type, mask1, mask2)                                        \
+#define WRITE_VRAM(type, mask1, mask2, val_mask)                              \
   if (((address >> 16) & 0x01) != 0)                                          \
     address &= mask1;                                                         \
   else                                                                        \
     address &= mask2;                                                         \
                                                                               \
+  if (option_ram_dynarec_policy == RAM_DYNAREC_FULL_FLUSH &&                   \
+      ADDRESS##type(vram, address) == (value & (val_mask)))                   \
+    return CPU_ALERT_NONE;                                                    \
   ADDRESS##type(vram, address) = value;                                       \
   return check_smc_write(vram_metadata, address, 0x06);                       \
 
 static CPU_ALERT_TYPE write8_vram(u32 address, u32 value)
 {
+  u32 doubled;
+
   if (((address >> 16) & 0x01) != 0)
     address &= 0x17FFe;
   else
     address &= 0x0FFFe;
 
-  ADDRESS16(vram, address) = value | (value << 8);
+  doubled = (value & 0xFF) | ((value & 0xFF) << 8);
+  if (option_ram_dynarec_policy == RAM_DYNAREC_FULL_FLUSH &&
+      ADDRESS16(vram, address) == doubled)
+    return CPU_ALERT_NONE;
+  ADDRESS16(vram, address) = doubled;
   return check_smc_write(vram_metadata, address, 0x06);
 }
 
 static CPU_ALERT_TYPE write16_vram(u32 address, u32 value)
 {
-  WRITE_VRAM(16, 0x17FFE, 0x0FFFE);
+  WRITE_VRAM(16, 0x17FFE, 0x0FFFE, 0xFFFF);
 }
 
 static CPU_ALERT_TYPE write32_vram(u32 address, u32 value)
 {
-  WRITE_VRAM(32, 0x17FFC, 0x0FFFC);
+  WRITE_VRAM(32, 0x17FFC, 0x0FFFC, 0xFFFFFFFF);
 }
 
 #define WRITE_OAM_RAM(type, mask)                                             \

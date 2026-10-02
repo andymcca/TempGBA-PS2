@@ -126,6 +126,7 @@ u32 idle_loop_targets = 0;
 u32 idle_loop_target_pc[MAX_IDLE_LOOPS];
 u32 force_pc_update_target = 0xFFFFFFFF;
 u32 iwram_stack_optimize = 1;
+u32 option_ram_dynarec_policy = RAM_DYNAREC_PARTIAL_WITH_REUSE;
 
 typedef struct
 {
@@ -3385,6 +3386,16 @@ u8* translate_block_##type(u32 pc)                                            \
    * for a translation gate to be placed at the end. */                       \
   if(translation_region == TRANSLATION_REGION_WRITABLE)                       \
   {                                                                           \
+    if (option_ram_dynarec_policy == RAM_DYNAREC_FULL_FLUSH)                  \
+    {                                                                         \
+      /* gpSP-style: mark compiled RAM words so a later store can detect SMC, \
+       * but do not build reuse headers or run the TempGBA metadata walk.     \
+       * num_block=3 avoids label clash with the partial-mode scan (1) and    \
+       * the read-only scan (2). */                                           \
+      scan_block(type, yes, 3);                                               \
+    }                                                                         \
+    else                                                                      \
+    {                                                                         \
     scan_block(type, yes, 1);                                                 \
                                                                               \
     /* Is a block with this checksum available? */                            \
@@ -3400,6 +3411,8 @@ u8* translate_block_##type(u32 pc)                                            \
        && Header->GBACodeSize == (block_end_pc - block_start_pc)              \
        && memcmp(opcodes.type, Header + 1, Header->GBACodeSize) == 0)         \
       {                                                                       \
+        if (option_ram_dynarec_policy != RAM_DYNAREC_PARTIAL_NO_REUSE)        \
+        {                                                                     \
         /* The code has been determined to be identical. Yay! */              \
         StatsAddWritableReuse((block_end_pc - block_start_pc) / type##_instruction_width); \
         trace_reuse();                                                        \
@@ -3424,6 +3437,13 @@ u8* translate_block_##type(u32 pc)                                            \
         update_metadata_area_end(pc);                                         \
                                                                               \
         return NativeCode;                                                    \
+        }                                                                     \
+        /* Reuse disabled: drop this header from the chain so we do not       \
+         * append a duplicate entry for the same GBA block (would corrupt     \
+         * the reuse list). Orphaned cache bytes until the next flush. */     \
+        *HeaderAddr = Header->Next;                                           \
+        Header = *HeaderAddr;                                                 \
+        continue;                                                             \
       }                                                                       \
                                                                               \
       HeaderAddr = &Header->Next;                                             \
@@ -3461,6 +3481,7 @@ u8* translate_block_##type(u32 pc)                                            \
     memcpy(translation_ptr, opcodes.type, code_size);                         \
                                                                               \
     translation_ptr += code_size+ Alignment;                                  \
+    }                                                                         \
   }                                                                           \
   else                                                                        \
   {                                                                           \
@@ -3539,8 +3560,7 @@ u8* translate_block_##type(u32 pc)                                            \
        * block statically below. THIS BEHAVIOUR NEEDS TO BE DUPLICATED IN THE \
        * EMITTER. Please see your emitter's generate_branch_no_cycle_update   \
        * macro for more information. */                                       \
-      if (branch_target < 0x00004000 /* BIOS */                               \
-      || (branch_target >= 0x08000000 && branch_target < 0x0E000000))         \
+      if (BRANCH_TARGET_CAN_BE_LINKED(branch_target))                         \
       {                                                                       \
         if (i != external_block_exit_position)                                \
         {                                                                     \
@@ -3689,6 +3709,12 @@ static void partial_clear_metadata_thumb(u16* metadata, u16* metadata_area_start
  */
 void partial_clear_metadata(u32 offset, u32 region)
 {
+  if (option_ram_dynarec_policy == RAM_DYNAREC_FULL_FLUSH)
+  {
+    flush_translation_cache(TRANSLATION_REGION_WRITABLE, FLUSH_REASON_INITIALIZING);
+    return;
+  }
+
   // 1. Determine where the Metadata Entry for this Data Word is.
   u16 *metadata;
 

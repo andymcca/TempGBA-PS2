@@ -191,6 +191,23 @@ extern u32 direct_map_vram;
 #define ROM_BRANCH_HASH_SIZE 65536 /* Must be a power of 2, 2 <= n <= 65536 */
 #define WRITABLE_HASH_SIZE 65536 /* Must be a power of 2, 2 <= n <= 65536 */
 
+/* RAM dynarec policy — same values as TempGBA4PSP-mod. */
+#define RAM_DYNAREC_FULL_FLUSH         0
+#define RAM_DYNAREC_PARTIAL_NO_REUSE   1
+#define RAM_DYNAREC_PARTIAL_WITH_REUSE 2
+
+extern u32 option_ram_dynarec_policy;
+
+#define BRANCH_TARGET_IS_BIOS_OR_ROM(addr)                                    \
+  ((addr) < 0x00004000 ||                                                     \
+   ((addr) >= 0x08000000 && (addr) < 0x0E000000))
+
+/* RAM targets stay indirect. Writable blocks are not pre-tagged the way BIOS
+ * is, so statically linking them recurses (A compiles B compiles A) and hangs.
+ * Original gpSP also never direct-links into RAM. */
+#define BRANCH_TARGET_CAN_BE_LINKED(addr)                                     \
+  BRANCH_TARGET_IS_BIOS_OR_ROM(addr)
+
 void partial_clear_metadata(u32 offset, u32 region);
 void flush_translation_cache(TRANSLATION_REGION_TYPE translation_region,
   CACHE_FLUSH_REASON_TYPE flush_reason);

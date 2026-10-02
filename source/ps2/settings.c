@@ -199,6 +199,11 @@ static void FixUpSettings()
 		PerGameHotkeys[3] = 0;
 	if (IsImpossibleHotkey(PerGameHotkeys[4]))
 		PerGameHotkeys[4] = 0;
+
+	if (RamDynarecPolicy > RAM_DYNAREC_PARTIAL_WITH_REUSE)
+		RamDynarecPolicy = RAM_DYNAREC_PARTIAL_WITH_REUSE;
+	if (PerGameRamDynarecPolicy > (RAM_DYNAREC_PARTIAL_WITH_REUSE + 1))
+		PerGameRamDynarecPolicy = 0;
 }
 
 void ReGBA_LoadSettings(char *cfg_name, bool PerGame)
@@ -299,6 +304,7 @@ void ReGBA_LoadSettings(char *cfg_name, bool PerGame)
 		ReGBA_Trace("W: Couldn't open file %s for loading.\n", fname);
 	}
 	FixUpSettings();
+	SyncRamDynarecPolicy();
 	ReGBA_ProgressFinalise();
 }
 
