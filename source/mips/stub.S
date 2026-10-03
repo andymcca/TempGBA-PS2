@@ -69,6 +69,7 @@
 .extern ReGBA_MakeCodeVisible
 
 .extern spsr
+.extern option_ram_dynarec_policy
 
 # MIPS register layout:
 
@@ -1488,19 +1489,86 @@ post_write_metadata_iwram:
 post_write_metadata_vram:
   post_write_metadata_core vram, vram_metadata, 0x06
 
+.macro store_same_value_skip waitstate
+  addiu $17, $17, \waitstate
+  blez $17, store_update_gba
+  sw $0, CHANGED_PC_STATUS($16)
+  jr $ra
+  nop
+.endm
+
 .macro store_u8_metadata base, waitstate, post_function
+  la $1, option_ram_dynarec_policy
+  lw $1, 0($1)
+#ifndef MIPS_XBURST
+  nop
+#endif
+  bne $1, $0, 2f                  # partial modes: always run metadata check
+  nop
+  lbu $1, %lo(\base)($2)          # full flush: same-value writes are not SMC
+#ifndef MIPS_XBURST
+  nop
+#endif
+  xor $1, $1, $5
+  andi $1, $1, 0xFF
+  beq $1, $0, 1f
+  sb $5, %lo(\base)($2)           # write on both paths (delay)
+  j \post_function
+  addiu $17, $17, \waitstate
+1:
+  store_same_value_skip \waitstate
+2:
   sb $5, %lo(\base)($2)           # store value at base[offset]
   j \post_function
   addiu $17, $17, \waitstate      # waitstate cycles (delay)
 .endm
 
 .macro store_u16_metadata base, waitstate, post_function
+  la $1, option_ram_dynarec_policy
+  lw $1, 0($1)
+#ifndef MIPS_XBURST
+  nop
+#endif
+  bne $1, $0, 2f
+  nop
+  lhu $1, %lo(\base)($2)
+#ifndef MIPS_XBURST
+  nop
+#endif
+  xor $1, $1, $5
+  andi $1, $1, 0xFFFF
+  beq $1, $0, 1f
+  sh $5, %lo(\base)($2)
+  j \post_function
+  addiu $17, $17, \waitstate
+1:
+  store_same_value_skip \waitstate
+2:
   sh $5, %lo(\base)($2)           # store value at base[offset]
   j \post_function
   addiu $17, $17, \waitstate      # waitstate cycles (delay)
 .endm
 
 .macro store_u32_metadata base, waitstate, post_function
+  la $1, option_ram_dynarec_policy
+  lw $1, 0($1)
+#ifndef MIPS_XBURST
+  nop
+#endif
+  bne $1, $0, 2f
+  nop
+  lw $1, %lo(\base)($2)
+#ifndef MIPS_XBURST
+  nop
+#endif
+  xor $1, $1, $5
+  beq $1, $0, 1f
+  sw $5, %lo(\base)($2)
+  j \post_function
+  addiu $17, $17, \waitstate
+1:
+  store_same_value_skip \waitstate
+2:
   sw $5, %lo(\base)($2)           # store value at base[offset]
   j \post_function
   addiu $17, $17, \waitstate      # waitstate cycles (delay)
@@ -2804,9 +2872,14 @@ execute_store_palette_u8:
 
 execute_store_vram_u8:
   translate_region_vram_store_align16 patch_store_u8
-  store_u8_double vram
-  j post_write_metadata_vram
-  addiu $17, $17, -1              # waitstate cycles
+#ifdef MIPS_32R2
+  ins   $5, $5, 8, 8              # value = (value << 8) | value
+#else
+  andi  $5, $5, 0x00FF
+  sll   $1, $5, 8
+  or    $5, $1, $5
+#endif
+  store_u16_metadata vram, -1, post_write_metadata_vram
 
 execute_store_oam_u8:
   ignore_region 7, patch_store_u8 # Write byte datas are ignore

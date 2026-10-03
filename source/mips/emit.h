@@ -650,18 +650,11 @@ const u8 arm_to_mips_reg[] =
   }                                                                           \
                                                                               \
   /* This uses variables from cpu.c's translate_block_builder /               \
-   * translate_block_arm / translate_block_thumb functions. Basically,        \
-   * if we're emitting a jump from a read-only area (BIOS or ROM) and         \
-   * the branch target is in a read-only area (BIOS or ROM), we can link      \
-   * statically and backpatch all we like, but if we're emitting a branch     \
-   * towards a basic block that's in writable (GBA) memory, that block is     \
-   * OFF LIMITS and that branch must be issued indirectly and resolved at     \
-   * branch time. This allows us to efficiently clear SOME of the RAM         \
-   * code cache after SOME of it has been modified. Ideally, that's one       \
-   * basic block. */                                                          \
+   * translate_block_arm / translate_block_thumb functions.                   \
+   * BRANCH_TARGET_CAN_BE_LINKED() defines the policy for direct native       \
+   * linking and must match cpu.c's external_block_exit filtering logic. */   \
   if ((new_pc >= block_start_pc && new_pc < block_end_pc)                     \
-   || (new_pc >= 0x08000000 && new_pc < 0x0E000000) /* Game Pak ROM */        \
-   || (new_pc <  0x00004000) /* BIOS */)                                      \
+   || BRANCH_TARGET_CAN_BE_LINKED(new_pc))                                    \
   {                                                                           \
     mips_emit_j_filler(writeback_location);                                   \
     mips_emit_nop();                                                          \
