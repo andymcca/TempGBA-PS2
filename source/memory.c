@@ -2952,8 +2952,9 @@ static void load_backup_id(void)
       prefill = rom_pages;
 
 #ifdef _EE
-    /* Scratch is heap, not BSS, so the page cache can use that 512 KiB. */
-    scan_run_max = 16;
+    /* Scratch is heap, not BSS, so the page cache can use that space.
+     * It comes out of the menu reserve next to the ROM buffer. */
+    scan_run_max = 8;
     scan_scratch = malloc(scan_run_max * ROM_PAGE_BYTES);
     if (scan_scratch == NULL)
     {

@@ -25,6 +25,8 @@
 #define MAX_CHEATS_PAGE 133
 #define CHEATS_PER_PAGE 6
 #define MAX_CHEATS (MAX_CHEATS_PAGE * CHEATS_PER_PAGE)
+/* Code words shared by every cheat in the loaded file. */
+#define CHEAT_CODE_POOL_WORDS (32 * 1024)
 
 typedef enum
 {
@@ -40,7 +42,7 @@ typedef struct
 {
   char cheat_name[CHEAT_NAME_LENGTH];
   u32 cheat_active;
-  u32 cheat_codes[256];
+  u32 *cheat_codes;
   u32 num_cheat_lines;
   CHEAT_VARIANT_ENUM cheat_variant;
 } CHEAT_TYPE;

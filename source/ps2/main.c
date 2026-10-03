@@ -210,6 +210,7 @@ int main(int argc, char *argv[])
 
 	init_main();
 	init_sound();
+	ReGBA_ReserveROMArena();
 
 	{
 	char *boot_rom = (argc > 1) ? argv[1] : NULL;

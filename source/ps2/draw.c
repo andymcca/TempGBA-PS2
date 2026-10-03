@@ -214,7 +214,9 @@ void gsInit()
 	if(gsGlobal != NULL)
 	gsKit_deinit_global(gsGlobal);
 	
-	gsGlobal = gsKit_init_global();
+	/* Textures go out as DMA REF tags, so a frame queues well under 1 KiB.
+	 * The default pools (2 x 1 MiB + 256 KiB) would cost ROM buffer space. */
+	gsGlobal = gsKit_init_global_custom(256 * 1024, 64 * 1024);
 	
 	gsGlobal->PSM = GS_PSM_CT16;
 	

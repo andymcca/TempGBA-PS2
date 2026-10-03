@@ -152,4 +152,6 @@ enum {
 extern struct timespec TimeDifference(struct timespec Past, struct timespec Present);
 extern void GetFileNameNoExtension(char* Result, const char* Path);
 
+void ReGBA_ReserveROMArena(void);
+
 #endif

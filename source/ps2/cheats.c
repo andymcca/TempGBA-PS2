@@ -32,6 +32,7 @@ static char *DEFAULT_CHEAT_DIR;
 
 u32 g_num_cheats;
 CHEAT_TYPE current_cheats_flag[MAX_CHEATS];
+static u32 cheat_code_pool[CHEAT_CODE_POOL_WORDS];
 
 static void decrypt_gsa_code(int *address_ptr, int *value_ptr, CHEAT_VARIANT_ENUM cheat_variant);
 static void process_cheat_gs1(CHEAT_TYPE *cheat);
@@ -241,6 +242,8 @@ void add_cheats(char *cheats_filename)
   char current_line_tmp[256];
   char *name_ptr;
   unsigned int *cheat_code_ptr = NULL;
+  u32 *cheat_code_next = cheat_code_pool;
+  u32 *const cheat_code_end = cheat_code_pool + CHEAT_CODE_POOL_WORDS;
   int address = 0;
   int value = 0;
   u32 num_cheat_lines;
@@ -333,7 +336,8 @@ printf("find a valid entrey\n");
         }
 //printf("cheat%d:%s\n", g_num_cheats, game_config.cheats_flag[g_num_cheats].cheat_name);
         current_cheats_flag[g_num_cheats].cheat_variant = current_cheat_variant;
-        cheat_code_ptr = current_cheats_flag[g_num_cheats].cheat_codes;
+        current_cheats_flag[g_num_cheats].cheat_codes = cheat_code_next;
+        cheat_code_ptr = cheat_code_next;
         num_cheat_lines = 0;
 
 		if(current_cheat_variant != CHEAT_TYPE_CHT)
@@ -342,6 +346,8 @@ printf("find a valid entrey\n");
 			{
 			  if(strlen(current_line) < 3)
 				break;
+			  if(cheat_code_ptr + 2 > cheat_code_end)
+				continue;
 
 			  sscanf(current_line, "%08x %08x", &address, &value);
 
@@ -378,6 +384,8 @@ printf("find a valid entrey\n");
 				else
 					value += 0x3000000-0x40000;
 
+				if(cheat_code_ptr + 2 > cheat_code_end)
+					continue;
 				cheat_code_ptr[0] = value;
 
 				var = (unsigned char*)(cheat_code_ptr+2);
@@ -389,6 +397,8 @@ printf("find a valid entrey\n");
 
 					pt = sscanf_cht_value(pt+1, &value);
 
+					if(var >= (unsigned char*)cheat_code_end)
+						break;
 					*var = value;
 					var_len += 1;
 				} while(pt);
@@ -401,6 +411,7 @@ printf("find a valid entrey\n");
 		}
 
         current_cheats_flag[g_num_cheats].num_cheat_lines = num_cheat_lines;
+        cheat_code_next = cheat_code_ptr;
         g_num_cheats++;
 //printf("g_num_cheats: %d; num_cheat_lines: %d\n", g_num_cheats, num_cheat_lines);
         if (g_num_cheats == MAX_CHEATS) break;

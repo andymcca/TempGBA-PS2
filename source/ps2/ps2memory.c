@@ -20,9 +20,69 @@
 #include "common.h"
 #include <malloc.h>
 
-/* EE heap left free after the ROM. The in-game menu mallocs a screenshot
- * and its settings; without this they can fail by a few KiB. */
-#define MENU_HEAP_RESERVE (512 * 1024)
+/* EE heap left free after the ROM buffer. The menu screenshots, file
+ * list, zip inflater and paged-load scratch all come out of this. */
+#define MENU_HEAP_RESERVE (768 * 1024)
+
+/* One buffer for every ROM, taken once at boot and never freed. Freeing
+ * and reallocating per game let menu allocations land above the old ROM,
+ * so the next game only got a hole the size of the previous one. */
+static uint8_t* RomArena;
+static size_t RomArenaSize;
+
+static size_t LargestHeapBlock(void)
+{
+	size_t Size = 28 * 1024 * 1024;
+	size_t Step = 128 * 1024;
+	void* Probe;
+
+	while (Size >= Step)
+	{
+		Probe = memalign(64, Size);
+		if (Probe != NULL)
+		{
+			free(Probe);
+			break;
+		}
+		Size -= Step;
+	}
+	if (Size < Step)
+		return 0;
+
+	for (Step = 64 * 1024; Step >= 4 * 1024; Step /= 2)
+	{
+		Probe = memalign(64, Size + Step);
+		if (Probe != NULL)
+		{
+			free(Probe);
+			Size += Step;
+		}
+	}
+	return Size;
+}
+
+void ReGBA_ReserveROMArena(void)
+{
+	size_t Largest, Size;
+
+	if (RomArena != NULL)
+		return;
+
+	Largest = LargestHeapBlock();
+	if (Largest <= MENU_HEAP_RESERVE + ROM_PAGE_BYTES)
+	{
+		printf("ROM buffer: only %u KiB of heap free\r\n", (unsigned)(Largest / 1024));
+		return;
+	}
+
+	Size = (Largest - MENU_HEAP_RESERVE) & ~(size_t)(ROM_PAGE_BYTES - 1);
+	RomArena = memalign(64, Size);
+	if (RomArena != NULL)
+		RomArenaSize = Size;
+	printf("ROM buffer: %u KiB (largest heap block %u KiB, %u KiB kept free)\r\n",
+		(unsigned)(RomArenaSize / 1024), (unsigned)(Largest / 1024),
+		(unsigned)(MENU_HEAP_RESERVE / 1024));
+}
 
 #if defined USE_MMAP
 static FILE_TAG_TYPE MappedFile = FILE_TAG_INVALID;
@@ -48,20 +108,10 @@ uint8_t* ReGBA_MapEntireROM(FILE_TAG_TYPE File, size_t Size)
 	return Result;
 #elif defined LOAD_ALL_ROM
 	// The file is kept open for us. But we close it.
-	uint8_t* Result = malloc(Size);
-	if (Result != NULL)
-	{
-		/* Page instead if the whole image leaves no room for the menu. */
-		void* Reserve = malloc(MENU_HEAP_RESERVE);
-		if (Reserve == NULL)
-		{
-			free(Result);
-			printf("ROM fits in %u KiB but leaves no menu reserve — paging\r\n",
-				(unsigned)(Size / 1024));
-			return NULL;
-		}
-		free(Reserve);
-	}
+	uint8_t* Result = NULL;
+	ReGBA_ReserveROMArena();
+	if (RomArena != NULL && Size <= RomArenaSize)
+		Result = RomArena;
 	if (Result != NULL)
 	{
 		ReGBA_ProgressInitialise(FILE_ACTION_LOAD_ROM_FROM_FILE);
@@ -76,13 +126,15 @@ uint8_t* ReGBA_MapEntireROM(FILE_TAG_TYPE File, size_t Size)
 			Next = Size - Done < 65536 ? Size - Done : 65536;
 		}
 		ReGBA_ProgressFinalise();
+		/* Pages past the end of the file would otherwise show the last game. */
+		memset(Result + Done, 0, ((Size + ROM_PAGE_BYTES - 1) & ~(size_t)(ROM_PAGE_BYTES - 1)) - Done);
 		printf("ROM fully loaded into EE RAM (%u KiB)\r\n", (unsigned)(Size / 1024));
 		FILE_CLOSE(File);
 	}
 	else
 	{
-		printf("ROM malloc failed for %u KiB — falling back to fileXio paging\r\n",
-			(unsigned)(Size / 1024));
+		printf("ROM is %u KiB, ROM buffer is %u KiB — falling back to fileXio paging\r\n",
+			(unsigned)(Size / 1024), (unsigned)(RomArenaSize / 1024));
 	}
 
 	return Result;
@@ -102,7 +154,8 @@ void ReGBA_UnmapEntireROM(void* Mapping)
 	MappedFile = NULL;
 	MappedFileSize = 0;
 #elif defined LOAD_ALL_ROM
-	free(Mapping);
+	if (Mapping != RomArena)
+		free(Mapping);
 #  if TRACE_MEMORY
 	ReGBA_Trace("I: Unloaded the previous ROM from memory");
 #  endif
@@ -111,7 +164,12 @@ void ReGBA_UnmapEntireROM(void* Mapping)
 
 uint8_t* ReGBA_AllocateROM(size_t Size)
 {
-	uint8_t* Result = malloc(Size);
+	uint8_t* Result;
+	ReGBA_ReserveROMArena();
+	if (RomArena != NULL)
+		Result = Size <= RomArenaSize ? RomArena : NULL;
+	else
+		Result = malloc(Size);
 #if TRACE_MEMORY
 	if (Result != NULL)
 		ReGBA_Trace("I: Allocated space for a %u-byte ROM buffer", Size);
@@ -130,6 +188,17 @@ size_t ReGBA_AllocateOnDemandBuffer(void** Buffer, size_t rom_bytes)
 	const size_t step = 128 * 1024;
 	size_t Size = 28 * 1024 * 1024;
 	void* Result = NULL;
+
+	ReGBA_ReserveROMArena();
+	if (RomArena != NULL)
+	{
+		*Buffer = RomArena;
+		printf("On-demand ROM buffer: %u KiB (%u pages), ROM %u KiB\r\n",
+			(unsigned)(RomArenaSize / 1024),
+			(unsigned)(RomArenaSize / ROM_PAGE_BYTES),
+			(unsigned)(rom_bytes / 1024));
+		return RomArenaSize;
+	}
 
 	while (Size >= (512 * 1024))
 	{
@@ -163,7 +232,8 @@ size_t ReGBA_AllocateOnDemandBuffer(void** Buffer, size_t rom_bytes)
 
 void ReGBA_DeallocateROM(void* Buffer)
 {
-	free(Buffer);
+	if (Buffer != RomArena)
+		free(Buffer);
 #if TRACE_MEMORY
 	ReGBA_Trace("I: Deallocated space for the previous buffer");
 #endif
