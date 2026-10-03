@@ -1570,6 +1570,11 @@ static void ActionSavedStateWrite(struct Menu** ActiveMenu, uint32_t* ActiveMenu
 	}
 	
 	// 2. If the file didn't exist or the user wanted to overwrite it, save.
+	if (MainMenu.UserData == NULL)
+	{
+		ShowErrorScreen("Writing saved state #%" PRIu32 " failed:\nMemory allocation error", SelectedState + 1);
+		return;
+	}
 	uint32_t ret = save_state(SelectedState, MainMenu.UserData /* preserved screenshot */);
 	if (ret != 1)
 	{

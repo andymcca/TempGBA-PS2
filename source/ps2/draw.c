@@ -84,6 +84,55 @@ static char ProgressLineBuf[80];
 GSGLOBAL *gsGlobal;
 GSTEXTURE gsTexture;
 
+/* Page flip without stalling the EE. The TV reads one GS buffer; gameplay
+ * draws the other. The vblank handler swaps DISPFB and does not wait.
+ * A newer frame overwrites the back buffer if the previous one has not
+ * been shown yet, so PAL is not locked to 50 Hz. */
+static volatile int present_db;
+static volatile int present_ready;
+static volatile int present_drawing;
+static volatile int present_need_target;
+static volatile int present_draw_target;
+/* Double buffering is off for the menu and comes back on for gameplay. */
+static int present_suspended;
+
+static void present_disarm(void)
+{
+	present_db = 0;
+	present_ready = 0;
+	present_drawing = 0;
+	present_need_target = 0;
+}
+
+static void present_show(int index)
+{
+	int width = gsGlobal->Width;
+	u32 fbp = gsGlobal->ScreenBuffer[index & 1] >> 13;
+
+	GS_SET_DISPFB2(fbp, width >> 6, gsGlobal->PSM, 0, 0);
+}
+
+/* Draw into buffer 1. The display is on buffer 0. */
+static void present_arm(void)
+{
+	present_ready = 0;
+	present_drawing = 0;
+	present_need_target = 0;
+	if (gsGlobal->DoubleBuffering == GS_SETTING_ON)
+	{
+		present_db = 1;
+		present_draw_target = 1;
+		gsGlobal->ActiveBuffer = 1;
+		gsKit_setactive(gsGlobal);
+		dmaKit_wait_fast();
+	}
+	else
+	{
+		present_db = 0;
+		present_draw_target = 0;
+	}
+}
+
 static const u64 TEXTURE_RGBAQ = GS_SETREG_RGBAQ(0x80,0x80,0x80,0x80,0x00);
 static const u64 Black = GS_SETREG_RGBAQ(0x00,0x00,0x00,0x80,0x00);
 
@@ -136,13 +185,24 @@ void draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t color)
 
 void clear_screens()
 {
+	/* sync_flip also moves DISPFB. Don't let the vblank handler do it too. */
+	present_ready = 0;
+	present_drawing = 1;
+
 	gsKit_clear(gsGlobal, Black);
 	gsKit_queue_exec(gsGlobal);
 	gsKit_sync_flip(gsGlobal);
-	
+
 	gsKit_clear(gsGlobal, Black);
 	gsKit_queue_exec(gsGlobal);
 	gsKit_sync_flip(gsGlobal);
+
+	present_drawing = 0;
+	if (present_db)
+	{
+		present_draw_target = gsGlobal->ActiveBuffer & 1;
+		present_need_target = 0;
+	}
 }
 
 void gsInit()
@@ -165,6 +225,9 @@ void gsInit()
 
 void gsReload()
 {
+    present_disarm();
+    present_suspended = 0;
+
     gsGlobal->PSM = GS_PSM_CT16;  
     gsGlobal->DoubleBuffering = GS_SETTING_OFF;
     gsGlobal->ZBuffering = GS_SETTING_OFF;
@@ -241,6 +304,10 @@ void gsReload()
 	if((gsGlobal->Interlace == GS_INTERLACED) && (gsGlobal->Field == GS_FRAME))
 		gsGlobal->Height /= 2;
 
+	/* 720p and 1080i plus a second buffer and the 3x texture exceed 4 MB. */
+	if (gsGlobal->Mode != GS_MODE_DTV_720P && gsGlobal->Mode != GS_MODE_DTV_1080I)
+		gsGlobal->DoubleBuffering = GS_SETTING_ON;
+
 	OldVideoMode = ResolvedVideoMode;
     
 	gsKit_reset_screen(gsGlobal);
@@ -262,10 +329,12 @@ void gsReload()
 	}
 	
 	gsKit_mode_switch(gsGlobal, GS_ONESHOT);
+	present_arm();
 }
 
 void gsDeinit()
 {
+	present_disarm();
 	clear_screens();
 
 	gsKit_vram_clear(gsGlobal);
@@ -341,6 +410,20 @@ void ReGBA_VideoFlip()
 		CurrentScreenOverscanY = ScreenOverscanY;
 		gsKit_clear(gsGlobal, Black);
 	}
+
+	if (present_db && present_need_target)
+	{
+		gsGlobal->ActiveBuffer = present_draw_target & 1;
+		gsKit_setactive(gsGlobal);
+		dmaKit_wait_fast();
+		present_need_target = 0;
+	}
+
+	if (present_db)
+	{
+		present_drawing = 1;
+		present_ready = 0;
+	}
 	
 	SyncDCache(gsTexture.Mem, (void*)((unsigned int)gsTexture.Mem+gsKit_texture_size_ee(gsTexture.Width, gsTexture.Height, gsTexture.PSM)));
 	gsKit_texture_send_inline(gsGlobal, gsTexture.Mem, gsTexture.Width, gsTexture.Height, gsTexture.Vram, gsTexture.PSM, gsTexture.TBW, GS_CLUT_NONE);
@@ -352,11 +435,18 @@ void ReGBA_VideoFlip()
 						    	1.0f, TEXTURE_RGBAQ);
 
 	/* Submit the GS packet. Gameplay does not block here — pace_emulation()
-	 * holds the EE to 59.73 Hz. The menu can still use a full sync flip. */
+	 * holds the EE to 59.73 Hz. The menu is single-buffered and can still
+	 * use a full sync flip. */
 	gsKit_queue_exec(gsGlobal);
 	if (menu_res)
 	{
 		gsKit_sync_flip(gsGlobal);
+	}
+	else if (present_db)
+	{
+		gsKit_vsync_nowait();
+		present_drawing = 0;
+		present_ready = 1;
 	}
 	else
 	{
@@ -393,6 +483,17 @@ static int vblank_interrupt_handler(void)
 {
 	vblank_count++;
 	vblank_ticks++;
+
+	/* Register write only. gsKit_setactive from here would touch the GIF.
+	 * queue_exec has already returned, and pace_emulation waits out the
+	 * rest of the field, so the GS draw is done by this vblank. */
+	if (present_db && present_ready && !present_drawing)
+	{
+		present_show(present_draw_target);
+		present_draw_target ^= 1;
+		present_ready = 0;
+		present_need_target = 1;
+	}
 
 	ExitHandler();
 
@@ -535,6 +636,20 @@ void SetMenuResolution()
 
 	use_scaler = 0;
 	menu_res = 1;
+
+	/* The menu runs single-buffered: buffer 0 on screen and drawn into,
+	 * handler idle. Buffer 1 stays allocated for SetGameResolution. */
+	if (present_db)
+	{
+		present_disarm();
+		dmaKit_wait_fast();
+		gsGlobal->DoubleBuffering = GS_SETTING_OFF;
+		gsGlobal->ActiveBuffer = 0;
+		present_show(0);
+		gsKit_setactive(gsGlobal);
+		dmaKit_wait_fast();
+		present_suspended = 1;
+	}
 	
 	gsTex(width, height, &gsTexture);
 }
@@ -567,6 +682,15 @@ void SetGameResolution()
 	}
 	
 	menu_res = 0;
+
+	if (present_suspended)
+	{
+		present_suspended = 0;
+		dmaKit_wait_fast();
+		gsGlobal->DoubleBuffering = GS_SETTING_ON;
+		present_arm();
+	}
+
 	vblank_count = 0;
 	pace_ready = 0;
 	Stats.RenderedFPS = 0;
@@ -705,7 +829,8 @@ uint16_t *copy_screen()
 		dest_ptr += GBA_SCREEN_WIDTH;
 	}
 */  uint16_t *copy = malloc(GBA_SCREEN_WIDTH * GBA_SCREEN_HEIGHT * 2);
-    memcpy(copy, GBAScreen, GBA_SCREEN_WIDTH * GBA_SCREEN_HEIGHT * 2);
+    if (copy != NULL)
+        memcpy(copy, GBAScreen, GBA_SCREEN_WIDTH * GBA_SCREEN_HEIGHT * 2);
 	
 	return copy;
 }

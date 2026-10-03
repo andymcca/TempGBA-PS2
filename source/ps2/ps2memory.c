@@ -20,6 +20,10 @@
 #include "common.h"
 #include <malloc.h>
 
+/* EE heap left free after the ROM. The in-game menu mallocs a screenshot
+ * and its settings; without this they can fail by a few KiB. */
+#define MENU_HEAP_RESERVE (512 * 1024)
+
 #if defined USE_MMAP
 static FILE_TAG_TYPE MappedFile = FILE_TAG_INVALID;
 static size_t MappedFileSize;
@@ -45,6 +49,19 @@ uint8_t* ReGBA_MapEntireROM(FILE_TAG_TYPE File, size_t Size)
 #elif defined LOAD_ALL_ROM
 	// The file is kept open for us. But we close it.
 	uint8_t* Result = malloc(Size);
+	if (Result != NULL)
+	{
+		/* Page instead if the whole image leaves no room for the menu. */
+		void* Reserve = malloc(MENU_HEAP_RESERVE);
+		if (Reserve == NULL)
+		{
+			free(Result);
+			printf("ROM fits in %u KiB but leaves no menu reserve — paging\r\n",
+				(unsigned)(Size / 1024));
+			return NULL;
+		}
+		free(Reserve);
+	}
 	if (Result != NULL)
 	{
 		ReGBA_ProgressInitialise(FILE_ACTION_LOAD_ROM_FROM_FILE);
@@ -108,9 +125,8 @@ size_t ReGBA_AllocateOnDemandBuffer(void** Buffer, size_t rom_bytes)
 {
 	/* Take as much leftover EE heap as we can for 32 KiB ROM pages.
 	 * A 32 MiB ROM cannot fit next to the JIT caches. Step by 128 KiB
-	 * so a 15.x MiB hole is not reported as 14 MiB. A GUI reserve is
-	 * kept only when the whole image already fits. */
-	const size_t reserve = 256 * 1024;
+	 * so a 15.x MiB hole is not reported as 14 MiB. */
+	const size_t reserve = MENU_HEAP_RESERVE;
 	const size_t step = 128 * 1024;
 	size_t Size = 28 * 1024 * 1024;
 	void* Result = NULL;
@@ -123,8 +139,7 @@ size_t ReGBA_AllocateOnDemandBuffer(void** Buffer, size_t rom_bytes)
 		Size -= step;
 	}
 
-	if (Result != NULL && rom_bytes != 0 && Size >= rom_bytes &&
-	    Size > reserve + (512 * 1024) && (Size - reserve) >= rom_bytes)
+	if (Result != NULL && Size > reserve + (512 * 1024))
 	{
 		size_t shrunk = Size - reserve;
 		free(Result);
